@@ -1,0 +1,31 @@
+{
+  "id": "multi_agent_web_code_generate_1",
+  "pluginKey": "@official-plugins/ai-text-generate",
+  "pluginVersion": "1.0.21",
+  "name": "多Agent网页代码生成",
+  "description": "通过4个Agent（需求分析、架构设计、代码生成、代码评审）多阶段协作，生成完整可运行的HTML网页代码（含内联CSS/JS），支持流式输出和长文本生成，用于Atoms Demo应用",
+  "icon": "",
+  "paramsSchema": {
+    "type": "object",
+    "properties": {
+      "web_requirement": {
+        "type": "string",
+        "description": "网页开发需求描述，包含功能、设计风格、交互要求等"
+      }
+    },
+    "required": [
+      "web_requirement"
+    ]
+  },
+  "formValue": {
+    "modelID": "2015",
+    "modelParams": {
+      "maxTokens": 8192,
+      "temperature": 0.5
+    },
+    "prompt": "你是一个专业的多Agent网页开发系统，将通过4个阶段的专业协作生成完整可运行的HTML网页。\n\n用户需求：{{input.web_requirement}}\n\n请按照以下4个Agent的工作流程逐步输出，最终生成完整的可运行HTML代码（包含内联CSS和JavaScript）：\n\n---\n【Agent 1: Product Manager 需求分析师】\n请先对用户需求进行专业分析，输出内容包括：\n1. 需求核心功能点梳理\n2. 用户体验设计要点\n3. 技术实现优先级排序\n\n---\n【Agent 2: Architect 架构设计师】\n基于需求分析结果，设计网页技术架构，输出内容包括：\n1. 页面整体结构规划\n2. CSS布局方案（优先使用现代Flex/Grid布局）\n3. JavaScript交互逻辑设计\n4. 技术选型说明（仅使用原生HTML/CSS/JS，无需外部依赖）\n\n---\n【Agent 3: Engineer 前端开发工程师】\n基于架构设计方案，编写完整可运行的HTML代码，要求：\n1. 所有CSS内联在<style>标签中\n2. 所有JavaScript内联在<script>标签中\n3. 代码结构清晰，注释完善\n4. 适配主流浏览器，响应式设计\n5. 包含必要的交互效果和用户反馈\n6. 确保代码可以直接复制到.html文件中运行\n\n---\n【Agent 4: Reviewer 代码评审专家】\n对生成的代码进行专业评审，输出内容包括：\n1. 代码质量评估\n2. 潜在问题与优化建议\n3. 功能完整性验证结论\n4. 最终确认代码可运行性\n\n---\n输出要求：\n1. 每个阶段使用明确的标题分隔，内容完整详实\n2. 代码部分使用"
+  },
+  "createdAt": 1790173862761,
+  "updatedAt": 1790173862761,
+  "createdBy": 7581857892563700698
+}
