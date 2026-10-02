@@ -9,6 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@client/src/components/ui/select';
+import AutoHeightIframe from '@client/src/components/AutoHeightIframe';
 
 interface VersionDiffViewProps {
   project: Project;
@@ -36,7 +37,10 @@ const VersionDiffView: React.FC<VersionDiffViewProps> = ({
   const isDragging = useRef(false);
 
   const versions = project.versions || [];
-  const currentVersionLabel = `v${versions.length} (当前最新)`;
+  const maxVersion = versions.length > 0
+    ? Math.max(...versions.map((v: ProjectVersion) => v.version ?? 0))
+    : 0;
+  const currentVersionLabel = `v${maxVersion} (当前最新)`;
 
   const leftVersion = useMemo(() => {
     if (!leftVersionId) return null;
@@ -45,14 +49,14 @@ const VersionDiffView: React.FC<VersionDiffViewProps> = ({
 
   const leftLabel = useMemo(() => {
     if (!leftVersionId) return '';
-    const idx = versions.findIndex((v: ProjectVersion) => v.id === leftVersionId);
-    return idx >= 0 ? `v${idx + 1}` : '';
+    const v = versions.find((x: ProjectVersion) => x.id === leftVersionId);
+    return v ? `v${v.version}` : '';
   }, [leftVersionId, versions]);
 
   const rightLabel = rightVersionId
     ? (() => {
-        const idx = versions.findIndex((v: ProjectVersion) => v.id === rightVersionId);
-        return idx >= 0 ? `v${idx + 1}` : '';
+        const v = versions.find((x: ProjectVersion) => x.id === rightVersionId);
+        return v ? `v${v.version}` : '';
       })()
     : currentVersionLabel;
 
@@ -149,9 +153,9 @@ const VersionDiffView: React.FC<VersionDiffViewProps> = ({
                   <SelectValue placeholder="选择版本" />
                 </SelectTrigger>
                 <SelectContent>
-                  {versions.map((v: ProjectVersion, i: number) => (
+                  {versions.map((v: ProjectVersion) => (
                     <SelectItem key={v.id} value={v.id} className="text-xs">
-                      v{i + 1} - {new Date(v.createdAt).toLocaleDateString('zh-CN')}
+                      v{v.version} - {new Date(v.createdAt).toLocaleDateString('zh-CN')}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -165,11 +169,11 @@ const VersionDiffView: React.FC<VersionDiffViewProps> = ({
           </div>
           <div className="flex-1 bg-white overflow-hidden">
             {leftHtml ? (
-              <iframe
+              <AutoHeightIframe
                 srcDoc={leftHtml}
                 title="Left version"
-                className="w-full h-full border-0 bg-white"
-                sandbox="allow-scripts"
+                minHeight={500}
+                mode="scroll"
               />
             ) : (
               <div className="h-full flex items-center justify-center text-muted-foreground text-sm">
@@ -213,9 +217,9 @@ const VersionDiffView: React.FC<VersionDiffViewProps> = ({
                   <SelectItem value="__current__" className="text-xs">
                     {currentVersionLabel}
                   </SelectItem>
-                  {versions.map((v: ProjectVersion, i: number) => (
+                  {versions.map((v: ProjectVersion) => (
                     <SelectItem key={v.id} value={v.id} className="text-xs">
-                      v{i + 1} - {new Date(v.createdAt).toLocaleDateString('zh-CN')}
+                      v{v.version} - {new Date(v.createdAt).toLocaleDateString('zh-CN')}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -228,12 +232,18 @@ const VersionDiffView: React.FC<VersionDiffViewProps> = ({
             </span>
           </div>
           <div className="flex-1 bg-white overflow-hidden">
-            <iframe
-              srcDoc={rightHtml}
-              title="Right version"
-              className="w-full h-full border-0 bg-white"
-              sandbox="allow-scripts"
-            />
+            {rightHtml ? (
+              <AutoHeightIframe
+                srcDoc={rightHtml}
+                title="Right version"
+                minHeight={500}
+                mode="scroll"
+              />
+            ) : (
+              <div className="h-full flex items-center justify-center text-muted-foreground text-sm">
+                请选择右侧版本
+              </div>
+            )}
           </div>
         </div>
       </div>

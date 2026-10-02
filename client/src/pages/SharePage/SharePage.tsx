@@ -6,6 +6,7 @@ import { logger } from '@lark-apaas/client-toolkit/logger';
 import { projects } from '@client/src/api';
 import type { SharedProjectResponse } from '@shared/api.interface';
 import { Button } from '@client/src/components/ui/button';
+import AutoHeightIframe from '@client/src/components/AutoHeightIframe';
 
 const SharePage: React.FC = () => {
   const { token } = useParams<{ token: string }>();
@@ -116,11 +117,11 @@ const SharePage: React.FC = () => {
               <div className="w-12" />
             </div>
             <div className="bg-white">
-              <iframe
+              <AutoHeightIframe
                 srcDoc={project.generatedHtml}
                 title={project.name}
-                className="w-full h-[600px] border-0 bg-white"
-                sandbox="allow-scripts"
+                minHeight={600}
+                mode="auto-height"
               />
             </div>
           </div>

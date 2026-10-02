@@ -27,18 +27,21 @@ const VersionHistoryCard: React.FC<VersionHistoryCardProps> = ({
 }) => {
   if (!versions || versions.length === 0) return null;
 
+  const latestVersion = versions.length > 0
+    ? Math.max(...versions.map((v: ProjectVersion) => v.version ?? 0))
+    : 0;
+
   return (
     <Card>
       <CardHeader className="pb-3">
         <CardTitle className="text-lg">版本历史</CardTitle>
       </CardHeader>
       <CardContent className="space-y-2">
-        {versions.map((version: ProjectVersion, index: number) => {
+        {versions.map((version: ProjectVersion) => {
           const isCurrent =
-            (currentVersionId === null &&
-              index === versions.length - 1) ||
+            (currentVersionId === null && version.version === latestVersion) ||
             currentVersionId === version.id;
-          const versionNumber = index + 1;
+          const versionNumber = version.version;
           return (
             <div
               key={version.id}

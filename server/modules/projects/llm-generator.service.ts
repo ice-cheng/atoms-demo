@@ -8,10 +8,14 @@ const ARK_BASE_URL = 'https://ark.cn-beijing.volces.com/api/v3';
 const ARK_API_KEY = '7c391e92-86ac-4db5-9e53-e96fedc7a1c2';
 const ARK_TEMPERATURE = 0.7;
 const ARK_MAX_TOKENS = 1500;
-const PM_MAX_TOKENS = 500;
-const ARCH_MAX_TOKENS = 600;
-const ENGINEER_MAX_TOKENS = 3000;
-const REVIEW_MAX_TOKENS = 500;
+const PM_MAX_TOKENS = 800;
+const ARCH_MAX_TOKENS = 1200;
+const ENGINEER_MAX_TOKENS = 16384;
+const REVIEW_MAX_TOKENS = 1000;
+
+const ARK_FIRST_BYTE_TIMEOUT = 300000;
+const ARK_CHUNK_IDLE_TIMEOUT = 120000;
+const ARK_TOTAL_STREAM_TIMEOUT = 900000;
 
 const FIXER_PROMPT = (issues: string, existingCode: string, desc: string): string => `你是一位资深前端修复工程师。请根据以下评审意见修复现有代码中的问题。
 
@@ -51,6 +55,7 @@ const MIN_SCORE_PASS = 7;
 const DEFAULT_MODELS = [
   'doubao-seed-2-1-turbo-260628',
   'doubao-seed-2-0-lite-260428',
+  'doubao-seed-2-1-pro-260915',
 ];
 
 function getModelList(): string[] {
@@ -89,7 +94,7 @@ function loadTemplate(key: string): string {
 }
 
 export interface StreamEvent {
-  type: 'agent_start' | 'log' | 'code_chunk' | 'agent_done' | 'done' | 'error' | 'fixer_start' | 'fixer_log' | 'fixer_done' | 'race_done';
+  type: 'agent_start' | 'log' | 'code_chunk' | 'agent_done' | 'done' | 'error' | 'fixer_start' | 'fixer_log' | 'fixer_done' | 'race_done' | 'thinking';
   agent?: AgentLogEntry['agent'] | 'fixer';
   agentName?: string;
   message?: string;
@@ -348,8 +353,21 @@ export class LlmGeneratorService implements OnModuleInit {
         let codeBuffer = '';
         let inCodeBlock = false;
 
-        for await (const text of this.callArkStream(messages, phase.maxTokens)) {
-          if (!text) continue;
+        for await (const chunk of this.callArkStream(messages, phase.maxTokens)) {
+          if (!chunk || !chunk.text) continue;
+          const { type, text } = chunk;
+
+          if (type === 'thinking') {
+            yield {
+              type: 'log',
+              agent: phase.key,
+              agentName: phase.name,
+              message: text,
+              timestamp: new Date().toISOString(),
+            };
+            continue;
+          }
+
           phaseContent += text;
 
           if (phase.isCodePhase) {
@@ -472,7 +490,18 @@ export class LlmGeneratorService implements OnModuleInit {
     const issuesText = this.extractIssues(phaseResults['reviewer'] || '');
     let currentIssuesText = issuesText.join('\n');
 
-    if (finalScore < MIN_SCORE_PASS && issuesText) {
+    const htmlComplete = this.isHtmlComplete(finalHtml);
+    if (!htmlComplete) {
+      const incompleteIssue = 'HTML 代码不完整：缺少 </html> 或 </body> 闭合标签，代码可能被截断。请补全完整的 HTML 结构。';
+      currentIssuesText = currentIssuesText
+        ? `${currentIssuesText}\n${incompleteIssue}`
+        : incompleteIssue;
+      if (finalScore >= MIN_SCORE_PASS) {
+        finalScore = MIN_SCORE_PASS - 1;
+      }
+    }
+
+    if (finalScore < MIN_SCORE_PASS && currentIssuesText) {
       for (let round = 1; round <= MAX_FIXER_ROUNDS; round++) {
         fixerRounds = round;
 
@@ -497,8 +526,22 @@ export class LlmGeneratorService implements OnModuleInit {
           let fixerInCodeBlock = false;
           let fixerFullHtml = '';
 
-          for await (const text of this.callArkStream(fixerMessages, ENGINEER_MAX_TOKENS)) {
-            if (!text) continue;
+          for await (const chunk of this.callArkStream(fixerMessages, ENGINEER_MAX_TOKENS)) {
+            if (!chunk || !chunk.text) continue;
+            const { type, text } = chunk;
+
+            if (type === 'thinking') {
+              yield {
+                type: 'fixer_log',
+                agent: 'fixer',
+                agentName: 'Fixer Agent',
+                message: text,
+                round,
+                timestamp: new Date().toISOString(),
+              };
+              continue;
+            }
+
             fixerContent += text;
 
             fixerCodeBuffer += text;
@@ -605,8 +648,19 @@ export class LlmGeneratorService implements OnModuleInit {
             ];
 
             let reReviewContent = '';
-            for await (const text of this.callArkStream(reReviewMessages, REVIEW_MAX_TOKENS)) {
-              if (!text) continue;
+            for await (const chunk of this.callArkStream(reReviewMessages, REVIEW_MAX_TOKENS)) {
+              if (!chunk || !chunk.text) continue;
+              const { type, text } = chunk;
+              if (type === 'thinking') {
+                yield {
+                  type: 'log',
+                  agent: 'reviewer',
+                  agentName: 'Reviewer',
+                  message: text,
+                  timestamp: new Date().toISOString(),
+                };
+                continue;
+              }
               reReviewContent += text;
               yield {
                 type: 'log',
@@ -694,24 +748,26 @@ export class LlmGeneratorService implements OnModuleInit {
     modifyInstruction?: string,
   ): AsyncGenerator<StreamEvent> {
     const instruction = modifyInstruction?.trim() || description;
-    const rebuildPrompt = `你是一位资深前端工程师。请对现有的 HTML 网页进行修改和优化。
+    const rebuildPrompt = `你是一位资深前端工程师。你的任务是严格按照用户的修改指令，对现有的 HTML 网页进行精准修改。
 
-${modifyInstruction ? '用户修改指令：' + modifyInstruction : '用户需求描述：' + description}
-设计风格：${style}
+【用户修改指令】
+${modifyInstruction || description}
 
-现有 HTML 代码：
+【设计风格】
+${style}
+
+ 【现有 HTML 代码】
 \`\`\`html
 ${existingHtml.slice(0, 5000)}${existingHtml.length > 5000 ? '\n... (代码过长，仅展示前5000字符)' : ''}
 \`\`\`
 
-请根据用户需求，对现有代码进行修改。要求：
-1. 保持整体结构和风格的一致性
-2. 只修改需要变更的部分，保留不需要改动的功能
-3. 输出完整的、可直接运行的 HTML 文件
-4. 所有 CSS 和 JavaScript 都内联在 HTML 中
-5. 确保修改后的代码功能完整、可直接运行
+【核心要求 — 必须严格遵守】
+1. **只改用户明确要求修改的部分**，其余所有代码、功能、结构、样式必须完整保留，不得擅自重构、删减或添加未被要求的内容。
+2. **必须确保用户的修改指令在最终代码中完全生效**。例如要求改标题则 <title> 和页面主标题必须同时更新；要求改颜色则按钮/主题色必须出现对应颜色值。
+3. 输出完整的、可直接运行的 HTML 文件，所有 CSS 和 JavaScript 都内联在 HTML 中。
+4. 保持整体结构和风格的一致性，确保修改后的代码功能完整、可直接运行。
 
-请直接输出完整的修改后的 HTML 代码（从 <!DOCTYPE html> 开始到 </html> 结束），用 \`\`\`html 代码块包裹。`;
+请直接输出完整的修改后的 HTML 代码（从 <!DOCTYPE html> 开始到 </html> 结束），用 \`\`\`html 代码块包裹。**不要输出任何额外的解释文字，只输出代码块。**`;
 
     yield {
       type: 'agent_start',
@@ -723,7 +779,16 @@ ${existingHtml.slice(0, 5000)}${existingHtml.length > 5000 ? '\n... (代码过�
 
     try {
       const messages: ArkChatMessage[] = [
-        { role: 'system', content: '你是一个专业的前端工程师，擅长 HTML/CSS/JS 网页开发。' },
+        {
+          role: 'system',
+          content:
+            '你是一个严谨的前端工程师。规则：\n'
+            + '1. 严格按照用户的修改指令修改现有 HTML，用户要求改什么就改什么，不要自作主张。\n'
+            + '2. 用户要求改标题时，必须同时更新 <title> 标签和页面内主标题。\n'
+            + '3. 用户要求改颜色时，必须在 CSS 中使用指定颜色值。\n'
+            + '4. 没有被要求修改的部分，原样保留，不要重构、不要重写。\n'
+            + '5. 只输出 ```html 代码块，不要输出任何解释文字。',
+        },
         { role: 'user', content: rebuildPrompt },
       ];
 
@@ -732,8 +797,20 @@ ${existingHtml.slice(0, 5000)}${existingHtml.length > 5000 ? '\n... (代码过�
       let inCodeBlock = false;
       let phaseContent = '';
 
-      for await (const text of this.callArkStream(messages)) {
-        if (!text) continue;
+      for await (const chunk of this.callArkStream(messages, ENGINEER_MAX_TOKENS)) {
+        if (!chunk || !chunk.text) continue;
+        const { type, text } = chunk;
+
+        if (type === 'thinking') {
+          yield {
+            type: 'log',
+            agent: 'engineer',
+            agentName: 'Engineer',
+            message: text,
+            timestamp: new Date().toISOString(),
+          };
+          continue;
+        }
 
         phaseContent += text;
         codeBuffer += text;
@@ -1038,7 +1115,7 @@ ${existingHtml.slice(0, 5000)}${existingHtml.length > 5000 ? '\n... (代码过�
     model: string,
     messages: ArkChatMessage[],
     maxTokens?: number,
-  ): AsyncGenerator<string> {
+  ): AsyncGenerator<{ type: 'content' | 'thinking'; text: string }> {
     if (!ARK_API_KEY) {
       this.logger.warn('ARK_API_KEY 未设置，LLM 调用将失败');
       throw new Error('ARK_API_KEY 未配置，请在环境变量中设置');
@@ -1061,17 +1138,29 @@ ${existingHtml.slice(0, 5000)}${existingHtml.length > 5000 ? '\n... (代码过�
           Authorization: `Bearer ${ARK_API_KEY}`,
         },
         responseType: 'stream',
-        timeout: 120000,
+        timeout: ARK_FIRST_BYTE_TIMEOUT,
         validateStatus: (status: number) => status >= 200 && status < 300,
       },
     );
 
     const stream = response.data as NodeJS.ReadableStream;
     let buffer = '';
+    let hasReceivedAny = false;
     let hasYieldedContent = false;
+    let hasYieldedThinking = false;
+    let totalChunks = 0;
+    const startTime = Date.now();
+    this.logger.log(
+      `[LLM] 请求ARK model=${model} max_tokens=${maxTokens ?? ARK_MAX_TOKENS} stream=true temperature=${ARK_TEMPERATURE} messages=${messages.length}`,
+    );
 
     try {
       for await (const chunk of stream) {
+        if (!hasReceivedAny) {
+          hasReceivedAny = true;
+          const firstByteMs = Date.now() - startTime;
+          this.logger.log(`[LLM] 首字节到达 model=${model} elapsed=${firstByteMs}ms`);
+        }
         buffer += chunk.toString('utf-8');
         const lines = buffer.split('\n');
         buffer = lines.pop() ?? '';
@@ -1090,7 +1179,7 @@ ${existingHtml.slice(0, 5000)}${existingHtml.length > 5000 ? '\n... (代码过�
           try {
             const data = JSON.parse(dataStr) as {
               choices?: Array<{
-                delta?: { content?: string };
+                delta?: { content?: string; reasoning_content?: string };
                 finish_reason?: string;
               }>;
               error?: { message?: string; code?: string };
@@ -1104,10 +1193,26 @@ ${existingHtml.slice(0, 5000)}${existingHtml.length > 5000 ? '\n... (代码过�
               throw new Error(errMsg);
             }
 
-            const content = data.choices?.[0]?.delta?.content;
+            const delta = data.choices?.[0]?.delta;
+            const reasoning = delta?.reasoning_content;
+            const content = delta?.content;
+
+            if (reasoning) {
+              if (!hasYieldedThinking) {
+                hasYieldedThinking = true;
+                const thinkMs = Date.now() - startTime;
+                this.logger.log(`[LLM] 首条 reasoning 到达 model=${model} elapsed=${thinkMs}ms`);
+              }
+              yield { type: 'thinking', text: reasoning };
+            }
             if (content) {
-              hasYieldedContent = true;
-              yield content;
+              if (!hasYieldedContent) {
+                hasYieldedContent = true;
+                const contentMs = Date.now() - startTime;
+                this.logger.log(`[LLM] 首条 content 到达 model=${model} elapsed=${contentMs}ms`);
+              }
+              totalChunks += 1;
+              yield { type: 'content', text: content };
             }
           } catch (error) {
             if (error instanceof Error && error.message.startsWith('ARK API 错误')) {
@@ -1115,6 +1220,13 @@ ${existingHtml.slice(0, 5000)}${existingHtml.length > 5000 ? '\n... (代码过�
             }
             this.logger.debug('SSE 行解析失败', dataStr);
           }
+        }
+
+        const elapsed = Date.now() - startTime;
+        if (elapsed > ARK_TOTAL_STREAM_TIMEOUT) {
+          throw new Error(
+            `流式生成总时长超时（${Math.round(elapsed / 1000)}s > ${ARK_TOTAL_STREAM_TIMEOUT / 1000}s）`,
+          );
         }
       }
     } catch (error) {
@@ -1124,6 +1236,15 @@ ${existingHtml.slice(0, 5000)}${existingHtml.length > 5000 ? '\n... (代码过�
       throw error;
     }
 
+    if (!hasReceivedAny) {
+      throw new EarlyStreamError('ARK API 未返回任何数据');
+    }
+
+    const totalMs = Date.now() - startTime;
+    this.logger.log(
+      `[LLM] 调用完成 model=${model} totalMs=${totalMs}ms contentChunks=${totalChunks} hasThinking=${hasYieldedThinking}`,
+    );
+
     if (buffer.trim()) {
       const trimmed = buffer.trim();
       if (trimmed.startsWith('data:')) {
@@ -1131,11 +1252,14 @@ ${existingHtml.slice(0, 5000)}${existingHtml.length > 5000 ? '\n... (代码过�
         if (dataStr && dataStr !== '[DONE]') {
           try {
             const data = JSON.parse(dataStr) as {
-              choices?: Array<{ delta?: { content?: string } }>;
+              choices?: Array<{ delta?: { content?: string; reasoning_content?: string } }>;
             };
-            const content = data.choices?.[0]?.delta?.content;
-            if (content) {
-              yield content;
+            const delta = data.choices?.[0]?.delta;
+            if (delta?.reasoning_content) {
+              yield { type: 'thinking', text: delta.reasoning_content };
+            }
+            if (delta?.content) {
+              yield { type: 'content', text: delta.content };
             }
           } catch {
             // 忽略解析错误
@@ -1147,7 +1271,7 @@ ${existingHtml.slice(0, 5000)}${existingHtml.length > 5000 ? '\n... (代码过�
   private async *callArkStream(
     messages: ArkChatMessage[],
     maxTokens?: number,
-  ): AsyncGenerator<string> {
+  ): AsyncGenerator<{ type: 'content' | 'thinking'; text: string }> {
     const models: string[] = (this as any)._modelOverride ?? getModelList();
     const errors: string[] = [];
 
@@ -1156,19 +1280,66 @@ ${existingHtml.slice(0, 5000)}${existingHtml.length > 5000 ? '\n... (代码过�
       try {
         this.logger.log(`[LLM] 使用模型 ${model} 开始调用`);
         const generator = this.callArkStreamWithModel(model, messages, maxTokens);
-        let hasYielded = false;
+        let hasYieldedContent = false;
+        let hasReceivedAny = false;
+        let lastReceiveTime = Date.now();
+        let idleTimer: NodeJS.Timeout | null = null;
+        let idleTimedOut = false;
 
-        while (true) {
-          const result = await generator.next();
-          if (result.done) {
-            this.logger.log(`[LLM] 模型 ${model} 调用完成`);
-            return;
+        const resetIdle = (): void => {
+          lastReceiveTime = Date.now();
+        };
+
+        const startIdleTimer = (): void => {
+          if (idleTimer) clearTimeout(idleTimer);
+          idleTimer = setTimeout(() => {
+            idleTimedOut = true;
+            void generator.return({ type: 'content', text: '' });
+          }, ARK_CHUNK_IDLE_TIMEOUT);
+        };
+
+        const stopIdleTimer = (): void => {
+          if (idleTimer) {
+            clearTimeout(idleTimer);
+            idleTimer = null;
           }
-          if (!hasYielded) {
-            hasYielded = true;
-            this.logger.log(`[LLM] 模型 ${model} 首字输出，流式开始`);
+        };
+
+        try {
+          startIdleTimer();
+          while (true) {
+            const result = await generator.next();
+            resetIdle();
+            if (result.done) {
+              this.logger.log(`[LLM] 模型 ${model} 调用完成`);
+              return;
+            }
+            const { type, text } = result.value;
+            if (type === 'thinking') {
+              hasReceivedAny = true;
+              yield { type: 'thinking', text };
+              continue;
+            }
+            if (type === 'content') {
+              hasReceivedAny = true;
+              if (!hasYieldedContent) {
+                hasYieldedContent = true;
+                this.logger.log(`[LLM] 模型 ${model} 首字输出，流式开始`);
+              }
+              yield { type: 'content', text };
+            }
           }
-          yield result.value;
+        } finally {
+          stopIdleTimer();
+        }
+
+        if (idleTimedOut) {
+          throw new Error(
+            `流式数据空闲超时（${ARK_CHUNK_IDLE_TIMEOUT / 1000}s 无数据）`,
+          );
+        }
+        if (!hasReceivedAny) {
+          throw new EarlyStreamError('ARK API 未返回任何数据');
         }
       } catch (error) {
         const errMsg = error instanceof Error ? error.message : String(error);
@@ -1185,18 +1356,24 @@ ${existingHtml.slice(0, 5000)}${existingHtml.length > 5000 ? '\n... (代码过�
               error.code === 'ETIMEDOUT' ||
               error.code === 'ECONNREFUSED' ||
               error.code === 'ENOTFOUND' ||
-              error.code === 'ECONNRESET'));
+              error.code === 'ECONNRESET' ||
+              error.code === 'ERR_CANCELED')) ||
+          errMsg === 'aborted' ||
+          errMsg.includes('超时') ||
+          errMsg.includes('timeout') ||
+          errMsg.includes('ECONNRESET') ||
+          errMsg.includes('连接重置');
 
         if (isConnectionError && hasMore) {
           this.logger.warn(
-            `[LLM] 模型 ${model} 调用失败（连接/初始化阶段），降级到模型 ${nextModel}。原因: ${errMsg}`,
+            `[LLM] 模型 ${model} 连接错误，降级到模型 ${nextModel}。原因: ${errMsg}`,
           );
           continue;
         }
 
         if (!isConnectionError && hasMore) {
           this.logger.warn(
-            `[LLM] 模型 ${model} 流式输出中途失败（已输出内容），不降级，直接报错。原因: ${errMsg}`,
+            `[LLM] 模型 ${model} 流式输出中途业务失败（已输出内容），不降级，直接报错。原因: ${errMsg}`,
           );
           throw error;
         }
@@ -1223,6 +1400,16 @@ ${existingHtml.slice(0, 5000)}${existingHtml.length > 5000 ? '\n... (代码过�
       parts.push(`【使用模板】${extra.templateKey}`);
     }
     return parts.join('\n\n');
+  }
+
+  private isHtmlComplete(html: string): boolean {
+    if (!html || html.length < 50) return false;
+    const lower = html.toLowerCase();
+    const hasClosing = lower.includes('</html>') && lower.includes('</body>');
+    if (hasClosing) return true;
+    const hasStart = lower.includes('<!doctype html') || lower.includes('<html');
+    if (!hasStart) return false;
+    return false;
   }
 
   private extractHtml(content: string): string {

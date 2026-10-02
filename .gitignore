@@ -63,4 +63,3 @@ pnpm-lock.yaml
 # Agent files
 .agent/
 .npm_cache
-.env

@@ -3,6 +3,7 @@ import { toast } from 'sonner';
 import { Zap, Check, Loader2 } from 'lucide-react';
 import { logger } from '@lark-apaas/client-toolkit/logger';
 import { user as userApi } from '@client/src/api';
+import { useAuth } from '@client/src/contexts/AuthContext';
 import {
   Dialog,
   DialogContent,
@@ -38,6 +39,7 @@ const RechargeDialog: React.FC<RechargeDialogProps> = ({
 }) => {
   const [selectedKey, setSelectedKey] = useState<string>('standard_500');
   const [loading, setLoading] = useState(false);
+  const { refreshUser, updateCredits } = useAuth();
 
   const handleRecharge = async () => {
     const pkg = PACKAGES.find((p: RechargePackage) => p.key === selectedKey);
@@ -48,6 +50,8 @@ const RechargeDialog: React.FC<RechargeDialogProps> = ({
       await new Promise<void>((resolve: () => void) => setTimeout(resolve, 1200));
       const result = await userApi.recharge({ packageKey: pkg.key });
       toast.success(`充值成功！获得 ${result.added} Credits`);
+      updateCredits(result.credits);
+      void refreshUser();
       onSuccess?.(result.credits, result.added);
       onOpenChange(false);
     } catch (error) {

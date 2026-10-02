@@ -140,4 +140,12 @@ export class AuthService {
     if (!user) return false;
     return this.verifyPassword(password, user.passwordHash);
   }
+
+  invalidateUserTokens(userId: string): void {
+    for (const [token, uid] of this.tokenStore) {
+      if (uid === userId) {
+        this.tokenStore.delete(token);
+      }
+    }
+  }
 }

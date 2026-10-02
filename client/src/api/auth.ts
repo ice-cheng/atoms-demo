@@ -32,7 +32,8 @@ export async function getCurrentUser(): Promise<{ user: User }> {
     const token = localStorage.getItem('atoms_demo_token');
     const response = await axiosForBackend.get('/api/auth/me', {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
-    });
+      _skipAuthRefresh: true,
+    } as Record<string, unknown>);
     return response.data;
   } catch (error) {
     logger.error('获取当前用户失败', error);

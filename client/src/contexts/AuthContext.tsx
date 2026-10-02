@@ -25,18 +25,52 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    try {
-      const savedToken = localStorage.getItem(TOKEN_KEY);
-      const savedUser = localStorage.getItem(USER_KEY);
-      if (savedToken && savedUser) {
-        setToken(savedToken);
-        setUser(JSON.parse(savedUser));
+    let done = false;
+    const timeoutId = window.setTimeout(() => {
+      if (!done) {
+        done = true;
+        logger.warn('认证初始化超时（8s），强制结束 loading');
+        setIsLoading(false);
       }
-    } catch (error) {
-      logger.error('读取认证信息失败', error);
-    } finally {
-      setIsLoading(false);
-    }
+    }, 8000);
+
+    const initAuth = async (): Promise<void> => {
+      try {
+        const savedToken = localStorage.getItem(TOKEN_KEY);
+        const savedUser = localStorage.getItem(USER_KEY);
+        if (savedToken && savedUser) {
+          setToken(savedToken);
+          setUser(JSON.parse(savedUser));
+          try {
+            const { user: freshUser } = await authApi.getCurrentUser();
+            if (done) return;
+            if (freshUser) {
+              setUser(freshUser);
+              localStorage.setItem(USER_KEY, JSON.stringify(freshUser));
+            }
+          } catch (verifyError) {
+            if (done) return;
+            logger.warn('会话校验失败，清空本地登录态', verifyError);
+            setToken(null);
+            setUser(null);
+            localStorage.removeItem(TOKEN_KEY);
+            localStorage.removeItem(USER_KEY);
+          }
+        }
+      } catch (error) {
+        logger.error('读取认证信息失败', error);
+      } finally {
+        if (!done) {
+          done = true;
+          setIsLoading(false);
+        }
+      }
+    };
+    void initAuth();
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
   }, []);
 
   const login = (newUser: User, newToken: string) => {

@@ -52,6 +52,7 @@ interface DetailPanelProps {
   onExport: () => void;
   onNavigateBuild: (id: string) => void;
   onProjectUpdated?: (project: Project) => void;
+  onRollbackSuccess?: (project: Project) => void;
   onCompareClick: (versionId: string) => void;
 }
 
@@ -62,6 +63,7 @@ const DetailPanel: React.FC<DetailPanelProps> = ({
   onExport,
   onNavigateBuild,
   onProjectUpdated,
+  onRollbackSuccess,
   onCompareClick,
 }) => {
   const navigate = useNavigate();
@@ -129,7 +131,10 @@ const DetailPanel: React.FC<DetailPanelProps> = ({
 
   const handleRollbackSuccess = (updated: Project) => {
     setRollbackVersionId(null);
-    if (onProjectUpdated) {
+    setRollbackDialogOpen(false);
+    if (onRollbackSuccess) {
+      onRollbackSuccess(updated);
+    } else if (onProjectUpdated) {
       onProjectUpdated(updated);
     }
   };

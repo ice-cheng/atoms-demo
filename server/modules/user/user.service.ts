@@ -3,6 +3,7 @@ import { DRIZZLE_DATABASE, type PostgresJsDatabase } from "@lark-apaas/fullstack
 import { eq, sql } from 'drizzle-orm';
 import { atomsUsers } from '../../database/schema';
 import type { User, BrandKit, FontStyle } from '@shared/api.interface';
+import { AuthService } from '../auth/auth.service';
 
 interface UpdateProfileParams {
   username?: string;
@@ -23,7 +24,10 @@ const RECHARGE_PACKAGES: RechargePackage[] = [
 
 @Injectable()
 export class UserService {
-  constructor(@Inject(DRIZZLE_DATABASE) private readonly db: PostgresJsDatabase) {}
+  constructor(
+    @Inject(DRIZZLE_DATABASE) private readonly db: PostgresJsDatabase,
+    private readonly authService: AuthService,
+  ) {}
 
   private toUserResponse(row: typeof atomsUsers.$inferSelect): User {
     return {
@@ -167,5 +171,7 @@ export class UserService {
     if (deleted.length === 0) {
       throw new NotFoundException('用户不存在');
     }
+
+    this.authService.invalidateUserTokens(userId);
   }
 }

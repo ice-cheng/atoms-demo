@@ -40,6 +40,7 @@ import CodeViewer from './CodeViewer';
 import BuildLogViewer from './BuildLogViewer';
 import DetailPanel from './DetailPanel';
 import VersionDiffView from './VersionDiffView';
+import AutoHeightIframe from '@client/src/components/AutoHeightIframe';
 
 const ProjectDetailPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -107,6 +108,13 @@ const ProjectDetailPage: React.FC = () => {
 
   const handleProjectUpdated = useCallback((updated: Project) => {
     setProject(updated);
+  }, []);
+
+  const handleRollbackSuccess = useCallback((updated: Project) => {
+    setProject(updated);
+    setCurrentVersionId(null);
+    setLivePreviewHtml(null);
+    setActiveTab('preview');
   }, []);
 
   const displayHtml = useMemo(() => {
@@ -608,11 +616,12 @@ const ProjectDetailPage: React.FC = () => {
                           </span>
                         )}
                       </div>
-                      <iframe
-                        srcDoc={track === 'A' ? project.raceHtmlA : project.raceHtmlB}
+                      <AutoHeightIframe
+                        srcDoc={track === 'A' ? project.raceHtmlA ?? '' : project.raceHtmlB ?? ''}
                         title={`Version ${track}`}
-                        className="w-full h-[380px] border-0 bg-white"
-                        sandbox="allow-scripts"
+                        minHeight={380}
+                        maxHeight={380}
+                        mode="scroll"
                       />
                       {!project.raceWinner && (
                         <div className="p-3 border-t border-border flex justify-center">
@@ -798,13 +807,15 @@ const ProjectDetailPage: React.FC = () => {
                     <div className="w-12" />
                   </div>
                    <div className="bg-white">
-                     <iframe
-                       ref={iframeRef}
+                     <AutoHeightIframe
                        srcDoc={displayHtml}
                        title={project.name}
-                       className="w-full h-[520px] border-0 bg-white"
-                       sandbox="allow-scripts"
-                       onLoad={handleIframeLoad}
+                       minHeight={520}
+                       mode="auto-height"
+                       onLoad={(iframe) => {
+                         iframeRef.current = iframe;
+                         handleIframeLoad();
+                       }}
                      />
                    </div>
                    {clickToEditEnabled && (
@@ -919,6 +930,7 @@ const ProjectDetailPage: React.FC = () => {
             onExport={handleExportHtml}
             onNavigateBuild={handleNavigateBuild}
             onProjectUpdated={handleProjectUpdated}
+            onRollbackSuccess={handleRollbackSuccess}
             onCompareClick={handleCompareVersion}
           />
         </div>

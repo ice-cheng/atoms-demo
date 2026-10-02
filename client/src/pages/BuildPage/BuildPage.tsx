@@ -66,7 +66,8 @@ const BuildPage: React.FC = () => {
   const { refreshUser } = useAuth();
 
   const [project, setProject] = useState<Project | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [pageLoading, setPageLoading] = useState(true);
+  const [building, setBuilding] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isRaceMode, setIsRaceMode] = useState(false);
   const [trackA, setTrackA] = useState<TrackState>(createInitialTrack());
@@ -138,7 +139,22 @@ const BuildPage: React.FC = () => {
       setProject(proj);
       projectIdRef.current = proj.id;
       setIsRaceMode(proj.raceMode ?? false);
-      setLoading(false);
+      setPageLoading(false);
+      setBuilding(true);
+    },
+    onAgentStart: (agentKey, agentName) => {
+      setTrackActive('A', agentKey);
+      logger.info(`Agent 开始: ${agentName}`);
+    },
+    onLog: (agentKey, _agentName, message) => {
+      if (!message) return;
+      appendLogToTrack('A', agentKey, message);
+    },
+    onAgentDone: (agentKey) => {
+      setTrackAgentDone('A', agentKey);
+    },
+    onCodeChunk: (code, fullHtml) => {
+      setTrackA((prev) => ({ ...prev, codeLength: fullHtml.length, tokenCount: prev.tokenCount + code.length }));
     },
     onTrackAgentStart: (track, agentKey, agentName) => {
       setTrackActive(track, agentKey);
@@ -147,9 +163,6 @@ const BuildPage: React.FC = () => {
     onTrackLog: (track, agentKey, _agentName, message) => {
       if (!message) return;
       appendLogToTrack(track, agentKey, message);
-    },
-    onCodeChunk: (code, fullHtml) => {
-      setTrackA((prev) => ({ ...prev, codeLength: fullHtml.length, tokenCount: prev.tokenCount + code.length }));
     },
     onTrackCodeChunk: (track, code, fullHtml) => {
       const setter = track === 'A' ? setTrackA : setTrackB;
@@ -166,6 +179,7 @@ const BuildPage: React.FC = () => {
       setTrackDone(track);
     },
     onDone: () => {
+      setBuilding(false);
       if (!isRaceMode) {
         setTrackDone('A');
       }
@@ -184,6 +198,7 @@ const BuildPage: React.FC = () => {
       }
     },
     onRaceDone: () => {
+      setBuilding(false);
       setTrackDone('A');
       setTrackDone('B');
       void refreshUser();
@@ -201,6 +216,8 @@ const BuildPage: React.FC = () => {
       }
     },
     onError: (errMsg) => {
+      setPageLoading(false);
+      setBuilding(false);
       setError(errMsg);
       setTrackA((p) => ({ ...p, isTyping: false }));
       setTrackB((p) => ({ ...p, isTyping: false }));
@@ -256,10 +273,14 @@ const BuildPage: React.FC = () => {
     if (state?.createData) {
       streamStartedRef.current = true;
       setIsRaceMode(state.createData.raceMode ?? false);
+      setPageLoading(false);
+      setBuilding(true);
       const callbacks = buildRaceCallbacks(false);
       projectsApi.streamCreateProject(state.createData, callbacks)
         .catch((err) => {
           logger.error('流式构建异常', err);
+          setPageLoading(false);
+          setBuilding(false);
           setError(err instanceof Error ? err.message : '构建失败');
           streamStartedRef.current = false;
         });
@@ -268,10 +289,14 @@ const BuildPage: React.FC = () => {
 
     if (state?.isRebuild && state?.rebuildData && id) {
       streamStartedRef.current = true;
+      setPageLoading(false);
+      setBuilding(true);
       const callbacks = buildRaceCallbacks(true);
       projectsApi.streamRebuildProject(id, state.rebuildData, callbacks)
         .catch((err) => {
           logger.error('流式重建异常', err);
+          setPageLoading(false);
+          setBuilding(false);
           setError(err instanceof Error ? err.message : '构建失败');
           streamStartedRef.current = false;
         });
@@ -279,7 +304,7 @@ const BuildPage: React.FC = () => {
     }
 
     if (!id) {
-      setLoading(false);
+      setPageLoading(false);
       setError('未找到项目信息');
       return;
     }
@@ -292,7 +317,8 @@ const BuildPage: React.FC = () => {
           setProject(data);
           setIsRaceMode(data.raceMode ?? false);
           projectIdRef.current = data.id;
-          setLoading(false);
+          setPageLoading(false);
+          setBuilding(data.status === 'building');
           if (data.status === 'completed') {
             setTrackA((prev) => ({ ...prev, complete: true, progress: 100, activeIndex: allAgents.length }));
             const logsMap: Record<string, string[]> = { pm: [], architect: [], engineer: [], reviewer: [], fixer: [] };
@@ -310,7 +336,7 @@ const BuildPage: React.FC = () => {
         if (mounted) {
           logger.error('获取项目失败', err);
           setError('获取项目信息失败');
-          setLoading(false);
+          setPageLoading(false);
         }
       }
     };
@@ -329,7 +355,7 @@ const BuildPage: React.FC = () => {
     return 'waiting';
   };
 
-  if (loading) {
+  if (pageLoading) {
     return (
       <div className="min-h-full bg-slate-50 flex items-center justify-center">
         <div className="text-slate-500">加载中...</div>
@@ -434,15 +460,17 @@ const BuildPage: React.FC = () => {
               style={{ width: `${overallProgress}%` }}
             />
           </div>
-          <div className="mt-2 text-sm text-slate-500">
-            {trackA.complete && (!isRaceMode || trackB.complete)
-              ? '构建完成，正在跳转...'
-              : isRaceMode
-                ? '双赛道并行生成中...'
-                : trackA.activeIndex < allAgents.length && allAgents[trackA.activeIndex]
-                  ? `${allAgents[trackA.activeIndex].name} 正在工作...`
-                  : '准备中...'}
-          </div>
+           <div className="mt-2 text-sm text-slate-500">
+             {trackA.complete && (!isRaceMode || trackB.complete)
+               ? '构建完成，正在跳转...'
+               : !building
+                 ? '准备中...'
+                 : isRaceMode
+                   ? '双赛道并行生成中...'
+                   : trackA.activeIndex < allAgents.length && allAgents[trackA.activeIndex]
+                     ? `${allAgents[trackA.activeIndex].name} 正在工作...`
+                     : '初始化构建环境...'}
+           </div>
         </div>
 
         {isRaceMode ? (

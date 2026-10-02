@@ -22,6 +22,7 @@ export interface ProjectVersion {
   html: string;
   description: string;
   createdAt: string;
+  version: number;
 }
 
 export interface Project {

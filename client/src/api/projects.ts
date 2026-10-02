@@ -267,21 +267,59 @@ function buildStreamUrl(path: string): string {
   return base + path;
 }
 
+function getAuthHeaders(): Record<string, string> {
+  const token = localStorage.getItem('atoms_demo_token');
+  const csrfToken = getCsrfTokenFromCookie() || (window.csrfToken ?? '');
+  return {
+    'Content-Type': 'application/json',
+    'X-Suda-Csrf-Token': csrfToken || '',
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+}
+
+let heartbeatTimer: number | null = null;
+let heartbeatProjectId: string | null = null;
+
+function startHeartbeat(projectId: string): void {
+  stopHeartbeat();
+  heartbeatProjectId = projectId;
+  const beat = async (): Promise<void> => {
+    if (heartbeatProjectId !== projectId) return;
+    try {
+      await fetch(`/api/projects/${projectId}/heartbeat`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: getAuthHeaders(),
+        body: '{}',
+      });
+    } catch (err) {
+      logger.warn('心跳请求失败', err);
+    }
+  };
+  void beat();
+  heartbeatTimer = window.setInterval(beat, 10000);
+}
+
+function stopHeartbeat(): void {
+  if (heartbeatTimer !== null) {
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+  }
+  heartbeatProjectId = null;
+}
+
 export async function streamCreateProject(
   data: CreateProjectRequest,
   callbacks: StreamBuildCallbacks,
 ): Promise<void> {
   const token = localStorage.getItem('atoms_demo_token');
   const csrfToken = getCsrfTokenFromCookie() || (window.csrfToken ?? '');
+  const authHeaders = getAuthHeaders();
   // eslint-disable-next-line no-restricted-syntax -- SSE 流式读取必须使用 fetch + ReadableStream，axios 不支持
   const response = await fetch(buildStreamUrl('/api/projects/stream/generate'), {
     method: 'POST',
     credentials: 'include',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Suda-Csrf-Token': csrfToken || '',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
+    headers: authHeaders,
     body: JSON.stringify(data),
   });
 
@@ -320,6 +358,9 @@ export async function streamCreateProject(
         } else if (line === '' && eventType) {
           try {
             const parsed = JSON.parse(eventData) as StreamBuildEvent;
+            if (eventType === 'project_created' && (parsed as unknown as Project).id) {
+              startHeartbeat((parsed as unknown as Project).id);
+            }
             handleStreamEvent(parsed, eventType, callbacks);
           } catch {
             logger.warn('解析 SSE 事件失败', eventType, eventData);
@@ -332,6 +373,8 @@ export async function streamCreateProject(
   } catch (error) {
     logger.error('流式创建项目失败', error);
     callbacks.onError?.(error instanceof Error ? error.message : '未知错误');
+  } finally {
+    stopHeartbeat();
   }
 }
 
@@ -340,17 +383,12 @@ export async function streamRebuildProject(
   data: RebuildProjectRequest,
   callbacks: StreamBuildCallbacks,
 ): Promise<void> {
-  const token = localStorage.getItem('atoms_demo_token');
-  const csrfToken = getCsrfTokenFromCookie() || (window.csrfToken ?? '');
+  const authHeaders = getAuthHeaders();
   // eslint-disable-next-line no-restricted-syntax -- SSE 流式读取必须使用 fetch + ReadableStream，axios 不支持
   const response = await fetch(buildStreamUrl(`/api/projects/${id}/rebuild/stream`), {
     method: 'POST',
     credentials: 'include',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Suda-Csrf-Token': csrfToken || '',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
+    headers: authHeaders,
     body: JSON.stringify(data),
   });
 
@@ -389,6 +427,9 @@ export async function streamRebuildProject(
         } else if (line === '' && eventType) {
           try {
             const parsed = JSON.parse(eventData) as StreamBuildEvent;
+            if (eventType === 'rebuild_started') {
+              startHeartbeat(id);
+            }
             handleStreamEvent(parsed, eventType, callbacks);
           } catch {
             logger.warn('解析 SSE 事件失败', eventType, eventData);
@@ -401,6 +442,8 @@ export async function streamRebuildProject(
   } catch (error) {
     logger.error('流式重建失败', error);
     callbacks.onError?.(error instanceof Error ? error.message : '未知错误');
+  } finally {
+    stopHeartbeat();
   }
 }
 
@@ -409,17 +452,12 @@ export async function streamDebugFix(
   data: DebugFixRequest,
   callbacks: StreamBuildCallbacks,
 ): Promise<void> {
-  const token = localStorage.getItem('atoms_demo_token');
-  const csrfToken = getCsrfTokenFromCookie() || (window.csrfToken ?? '');
+  const authHeaders = getAuthHeaders();
   // eslint-disable-next-line no-restricted-syntax -- SSE 流式读取必须使用 fetch + ReadableStream，axios 不支持
   const response = await fetch(buildStreamUrl(`/api/projects/${id}/debug/stream`), {
     method: 'POST',
     credentials: 'include',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Suda-Csrf-Token': csrfToken || '',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
+    headers: authHeaders,
     body: JSON.stringify(data),
   });
 
@@ -437,6 +475,8 @@ export async function streamDebugFix(
 
   const decoder = new TextDecoder();
   let buffer = '';
+
+  startHeartbeat(id);
 
   try {
     while (true) {
@@ -470,6 +510,8 @@ export async function streamDebugFix(
   } catch (error) {
     logger.error('智能调试失败', error);
     callbacks.onError?.(error instanceof Error ? error.message : '未知错误');
+  } finally {
+    stopHeartbeat();
   }
 }
 

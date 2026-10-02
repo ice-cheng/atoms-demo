@@ -7,6 +7,7 @@ import { ViewModule } from './modules/view/view.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { UserModule } from './modules/user/user.module';
 import { ProjectsModule } from './modules/projects/projects.module';
+import { HealthModule } from './modules/health/health.module';
 
 @Module({
   imports: [
@@ -17,6 +18,7 @@ import { ProjectsModule } from './modules/projects/projects.module';
     AuthModule,
     UserModule,
     ProjectsModule,
+    HealthModule,
     // ====== @route-section: business-modules END ======
 
     // ⚠️ @route-order: last

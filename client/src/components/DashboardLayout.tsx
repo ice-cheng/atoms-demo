@@ -10,6 +10,7 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { useAuth } from '@client/src/contexts/AuthContext';
+import ErrorBoundary from './ErrorBoundary';
 
 const DashboardLayout: React.FC = () => {
   const { user, logout } = useAuth();
@@ -85,7 +86,9 @@ const DashboardLayout: React.FC = () => {
       </aside>
 
       <main className="flex-1 overflow-auto">
-        <Outlet />
+        <ErrorBoundary>
+          <Outlet />
+        </ErrorBoundary>
       </main>
     </div>
   );
