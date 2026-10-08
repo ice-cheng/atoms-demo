@@ -117,6 +117,21 @@ export const fileAttachmentArray = customType<{
   },
 });
 
+export const authTokens = pgTable("auth_tokens", {
+  token: varchar("token", { length: 64 }).primaryKey(),
+  userId: uuid("user_id").notNull(),
+  createdAt: customTimestamptz("created_at", { precision: 3 }).notNull().default(sql`CURRENT_TIMESTAMP`),
+  expiresAt: customTimestamptz("expires_at", { precision: 3 }),
+}, (table) => [
+  index("idx_auth_tokens_user_id").on(table.userId),
+  index("idx_auth_tokens_expires_at").on(table.expiresAt),
+  foreignKey({
+    columns: [table.userId],
+    foreignColumns: [atomsUsers.id],
+    name: "auth_tokens_user_id_fkey",
+  }).onDelete("cascade"),
+]);
+
 export const atomsProjects = pgTable("atoms_projects", {
   id: uuid("id").primaryKey().defaultRandom(),
   userId: uuid("user_id").notNull(),
@@ -177,3 +192,4 @@ export const atomsUsers = pgTable("atoms_users", {
 // table aliases
 export const atomsProjectsTable = atomsProjects;
 export const atomsUsersTable = atomsUsers;
+export const authTokensTable = authTokens;

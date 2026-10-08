@@ -104,21 +104,21 @@ const NewProjectPage: React.FC = () => {
   };
 
   return (
-    <div className="min-h-full bg-slate-50 py-10 px-8">
-      <div className="max-w-3xl mx-auto">
-        {/* Header */}
-        <div className="text-center mb-10">
-          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-violet-100 text-violet-700 text-sm font-medium mb-4">
-            <Sparkles className="w-4 h-4" />
-            AI 驱动构建
-          </div>
-          <h1 className="text-4xl font-bold text-slate-900 mb-3">
-            描述你的想法
-          </h1>
-          <p className="text-lg text-slate-500">
-            用自然语言描述你想要构建的应用，AI Agent 会帮你实现它
-          </p>
-        </div>
+     <div className="min-h-full bg-slate-50 py-6 sm:py-10 px-4 sm:px-6 lg:px-8">
+       <div className="max-w-3xl mx-auto">
+         {/* Header */}
+         <div className="text-center mb-8">
+           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-violet-100 text-violet-700 text-sm font-medium mb-4">
+             <Sparkles className="w-4 h-4" />
+             AI 驱动构建
+           </div>
+           <h1 className="text-2xl sm:text-3xl md:text-4xl font-bold text-slate-900 mb-3">
+             描述你的想法
+           </h1>
+           <p className="text-base sm:text-lg text-slate-500">
+             用自然语言描述你想要构建的应用，AI Agent 会帮你实现它
+           </p>
+         </div>
 
         {/* Main Card */}
         <Card className="mb-8">
@@ -153,13 +153,13 @@ const NewProjectPage: React.FC = () => {
           </CardContent>
         </Card>
 
-        {/* Quick Templates */}
-        <div className="mb-8">
-          <div className="flex items-center gap-2 mb-4">
-            <Zap className="w-5 h-5 text-amber-500" />
-            <h2 className="text-lg font-semibold text-slate-800">试试这些模板</h2>
-          </div>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+         {/* Quick Templates */}
+         <div className="mb-8">
+           <div className="flex items-center gap-2 mb-4">
+             <Zap className="w-5 h-5 text-amber-500" />
+             <h2 className="text-lg font-semibold text-slate-800">试试这些模板</h2>
+           </div>
+           <div className="grid grid-cols-2 gap-3">
             {quickTemplates.map((templateId) => {
               const template = templatesApi.getTemplateById(templateId);
               if (!template) return null;
@@ -181,13 +181,13 @@ const NewProjectPage: React.FC = () => {
           </div>
         </div>
 
-        {/* Style Selection */}
-        <div className="mb-10">
-          <div className="flex items-center gap-2 mb-4">
-            <Palette className="w-5 h-5 text-violet-500" />
-            <h2 className="text-lg font-semibold text-slate-800">选择风格</h2>
-          </div>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+         {/* Style Selection */}
+         <div className="mb-8 sm:mb-10">
+           <div className="flex items-center gap-2 mb-4">
+             <Palette className="w-5 h-5 text-violet-500" />
+             <h2 className="text-lg font-semibold text-slate-800">选择风格</h2>
+           </div>
+           <div className="grid grid-cols-2 gap-3 sm:gap-4 md:grid-cols-4">
             {styleOptions.map((option) => (
               <button
                 key={option.id}
@@ -294,12 +294,12 @@ const NewProjectPage: React.FC = () => {
               Credits 不足，请充值后再试
             </div>
           )}
-          <Button
-            onClick={handleSubmit}
-            disabled={!description.trim() || isCreating || !hasEnoughCredits}
-            size="lg"
-            className="min-w-[240px] h-14 text-base font-semibold bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white rounded-xl shadow-lg shadow-violet-500/25 disabled:shadow-none disabled:from-slate-300 disabled:to-slate-300"
-          >
+           <Button
+             onClick={handleSubmit}
+             disabled={!description.trim() || isCreating || !hasEnoughCredits}
+             size="lg"
+             className="w-full sm:min-w-[240px] sm:w-auto h-12 sm:h-14 text-base font-semibold bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white rounded-xl shadow-lg shadow-violet-500/25 disabled:shadow-none disabled:from-slate-300 disabled:to-slate-300"
+           >
             {isCreating ? (
               <>
                 <svg

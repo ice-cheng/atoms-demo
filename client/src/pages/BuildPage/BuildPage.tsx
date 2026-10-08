@@ -34,7 +34,9 @@ interface BuildPageLocationState {
 
 interface TrackState {
   activeIndex: number;
+  startedIndexes: Set<number>;
   logs: Record<string, string[]>;
+  thinking: Record<string, string>;
   progress: number;
   isTyping: boolean;
   complete: boolean;
@@ -46,8 +48,10 @@ interface TrackState {
 
 function createInitialTrack(): TrackState {
   return {
-    activeIndex: 0,
+    activeIndex: -1,
+    startedIndexes: new Set(),
     logs: { pm: [], architect: [], engineer: [], reviewer: [], fixer: [] },
+    thinking: { pm: '', architect: '', engineer: '', reviewer: '', fixer: '' },
     progress: 0,
     isTyping: false,
     complete: false,
@@ -100,16 +104,32 @@ const BuildPage: React.FC = () => {
     [],
   );
 
+  const appendThinkingToTrack = useCallback(
+    (track: 'A' | 'B', agentKey: string, message: string) => {
+      const setter = track === 'A' ? setTrackA : setTrackB;
+      setter((prev) => ({
+        ...prev,
+        thinking: { ...prev.thinking, [agentKey]: (prev.thinking[agentKey] || '') + message },
+      }));
+    },
+    [],
+  );
+
   const setTrackActive = useCallback((track: 'A' | 'B', agentKey: string) => {
     const setter = track === 'A' ? setTrackA : setTrackB;
     const idx = agentKeyToIndex(agentKey);
     if (idx === -1) return;
-    setter((prev) => ({
-      ...prev,
-      activeIndex: idx,
-      isTyping: true,
-      progress: (idx / allAgents.length) * 100,
-    }));
+    setter((prev) => {
+      const nextStarted = new Set(prev.startedIndexes);
+      nextStarted.add(idx);
+      return {
+        ...prev,
+        activeIndex: idx,
+        startedIndexes: nextStarted,
+        isTyping: true,
+        progress: (idx / allAgents.length) * 100,
+      };
+    });
   }, [agentKeyToIndex]);
 
   const setTrackAgentDone = useCallback((track: 'A' | 'B', agentKey: string) => {
@@ -125,13 +145,18 @@ const BuildPage: React.FC = () => {
 
   const setTrackDone = useCallback((track: 'A' | 'B') => {
     const setter = track === 'A' ? setTrackA : setTrackB;
-    setter((prev) => ({
-      ...prev,
-      complete: true,
-      isTyping: false,
-      progress: 100,
-      activeIndex: allAgents.length,
-    }));
+    setter((prev) => {
+      const nextStarted = new Set(prev.startedIndexes);
+      for (let i = 0; i < allAgents.length; i++) nextStarted.add(i);
+      return {
+        ...prev,
+        complete: true,
+        isTyping: false,
+        progress: 100,
+        activeIndex: allAgents.length,
+        startedIndexes: nextStarted,
+      };
+    });
   }, []);
 
   const buildRaceCallbacks = useCallback((isRebuild: boolean): RaceStreamBuildCallbacks => ({
@@ -150,6 +175,10 @@ const BuildPage: React.FC = () => {
       if (!message) return;
       appendLogToTrack('A', agentKey, message);
     },
+    onThinking: (agentKey, _agentName, message) => {
+      if (!message) return;
+      appendThinkingToTrack('A', agentKey, message);
+    },
     onAgentDone: (agentKey) => {
       setTrackAgentDone('A', agentKey);
     },
@@ -163,6 +192,10 @@ const BuildPage: React.FC = () => {
     onTrackLog: (track, agentKey, _agentName, message) => {
       if (!message) return;
       appendLogToTrack(track, agentKey, message);
+    },
+    onTrackThinking: (track, agentKey, _agentName, message) => {
+      if (!message) return;
+      appendThinkingToTrack(track, agentKey, message);
     },
     onTrackCodeChunk: (track, code, fullHtml) => {
       const setter = track === 'A' ? setTrackA : setTrackB;
@@ -178,14 +211,25 @@ const BuildPage: React.FC = () => {
     onTrackDone: (track) => {
       setTrackDone(track);
     },
-    onDone: () => {
+    onDone: async () => {
       setBuilding(false);
       if (!isRaceMode) {
         setTrackDone('A');
       }
       void refreshUser();
       toast.success(isRebuild ? '迭代修改完成' : '项目构建完成');
-      const targetId = projectIdRef.current;
+      let targetId = projectIdRef.current;
+      if (!targetId && !isRebuild) {
+        try {
+          const list = await projectsApi.getProjects();
+          if (list.items && list.items.length > 0) {
+            targetId = list.items[0].id;
+            projectIdRef.current = targetId;
+          }
+        } catch {
+          logger.warn('onDone 兜底获取项目ID失败');
+        }
+      }
       if (targetId && !isRebuild) {
         setTimeout(() => {
           navigate(`/dashboard/projects/${targetId}`);
@@ -197,13 +241,24 @@ const BuildPage: React.FC = () => {
         }, 1000);
       }
     },
-    onRaceDone: () => {
+    onRaceDone: async () => {
       setBuilding(false);
       setTrackDone('A');
       setTrackDone('B');
       void refreshUser();
       toast.success('竞速构建完成');
-      const targetId = projectIdRef.current;
+      let targetId = projectIdRef.current;
+      if (!targetId && !isRebuild) {
+        try {
+          const list = await projectsApi.getProjects();
+          if (list.items && list.items.length > 0) {
+            targetId = list.items[0].id;
+            projectIdRef.current = targetId;
+          }
+        } catch {
+          logger.warn('onRaceDone 兜底获取项目ID失败');
+        }
+      }
       if (targetId && !isRebuild) {
         setTimeout(() => {
           navigate(`/dashboard/projects/${targetId}`);
@@ -349,10 +404,10 @@ const BuildPage: React.FC = () => {
   const getAgentStatusForTrack = (
     track: TrackState,
     index: number,
-  ): 'waiting' | 'working' | 'done' => {
+  ): 'queued' | 'working' | 'done' => {
     if (index < track.activeIndex || track.complete) return 'done';
     if (index === track.activeIndex && !track.complete && !error) return 'working';
-    return 'waiting';
+    return 'queued';
   };
 
   if (pageLoading) {
@@ -410,6 +465,7 @@ const BuildPage: React.FC = () => {
             agent={agent}
             status={getAgentStatusForTrack(track, index)}
             logs={track.logs[agent.key] || []}
+             thinking={track.thinking[agent.key] || ''}
             isTyping={index === track.activeIndex && track.isTyping && !track.complete}
             codeProgress={agent.key === 'engineer' && track.activeIndex === 2 && !track.complete ? track.codeLength : 0}
           />
@@ -418,7 +474,8 @@ const BuildPage: React.FC = () => {
           <AgentCard
             agent={FIXER_AGENT}
             status={getAgentStatusForTrack(track, BASE_AGENTS.length)}
-            logs={track.logs.fixer || []}
+             logs={track.logs.fixer || []}
+             thinking={track.thinking.fixer || ''}
             isTyping={track.activeIndex === BASE_AGENTS.length && track.isTyping && !track.complete}
           />
         )}
@@ -436,15 +493,15 @@ const BuildPage: React.FC = () => {
     ? ((trackA.progress + trackB.progress) / 2)
     : trackA.progress;
 
-  return (
-    <div className="min-h-full bg-slate-50 py-8 px-8">
-      <div className={isRaceMode ? 'max-w-6xl mx-auto' : 'max-w-3xl mx-auto'}>
-        <div className="mb-8">
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-3">
-              <h1 className="text-2xl font-bold text-slate-900">
-                {project?.name || '构建中...'}
-              </h1>
+   return (
+     <div className="min-h-full bg-slate-50 py-6 px-4 sm:px-6 lg:px-8">
+       <div className={isRaceMode ? 'max-w-6xl mx-auto' : 'max-w-3xl mx-auto'}>
+         <div className="mb-6 sm:mb-8">
+           <div className="flex items-center justify-between mb-3">
+             <div className="flex items-center gap-3">
+               <h1 className="text-lg sm:text-2xl font-bold text-slate-900">
+                 {project?.name || '构建中...'}
+               </h1>
               {isRaceMode && (
                 <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-100 text-amber-700 text-xs font-semibold">
                   <Trophy className="w-3.5 h-3.5" />
@@ -467,18 +524,18 @@ const BuildPage: React.FC = () => {
                  ? '准备中...'
                  : isRaceMode
                    ? '双赛道并行生成中...'
-                   : trackA.activeIndex < allAgents.length && allAgents[trackA.activeIndex]
-                     ? `${allAgents[trackA.activeIndex].name} 正在工作...`
-                     : '初始化构建环境...'}
+                    : trackA.activeIndex >= 0 && trackA.activeIndex < allAgents.length && allAgents[trackA.activeIndex]
+                      ? `${allAgents[trackA.activeIndex].name} 正在工作...`
+                      : '准备开始构建...'}
            </div>
         </div>
 
-        {isRaceMode ? (
-          <div className="flex gap-6">
-            {renderTrackColumn(trackA, 'A', 'bg-sky-500')}
-            <div className="w-px bg-slate-200 flex-shrink-0" />
-            {renderTrackColumn(trackB, 'B', 'bg-emerald-500')}
-          </div>
+         {isRaceMode ? (
+           <div className="flex flex-col lg:flex-row gap-4 sm:gap-6">
+             {renderTrackColumn(trackA, 'A', 'bg-sky-500')}
+             <div className="hidden lg:block w-px bg-slate-200 flex-shrink-0" />
+             {renderTrackColumn(trackB, 'B', 'bg-emerald-500')}
+           </div>
         ) : (
           <div className="space-y-5">
             {BASE_AGENTS.map((agent, index) => (

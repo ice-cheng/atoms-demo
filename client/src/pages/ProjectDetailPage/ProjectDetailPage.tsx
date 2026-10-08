@@ -11,6 +11,7 @@ import {
   Sparkles,
   ChevronDown,
   ChevronUp,
+  Brain,
   RefreshCw,
   MousePointer2,
   Trophy,
@@ -65,6 +66,7 @@ const ProjectDetailPage: React.FC = () => {
   const [errorPanelOpen, setErrorPanelOpen] = useState(false);
   const [debuggerRunning, setDebuggerRunning] = useState(false);
   const [debuggerLogs, setDebuggerLogs] = useState<string[]>([]);
+  const [debuggerThinking, setDebuggerThinking] = useState('');
   const debuggerStartedRef = useRef(false);
 
   // Version diff comparison
@@ -82,6 +84,8 @@ const ProjectDetailPage: React.FC = () => {
   const [isModifying, setIsModifying] = useState(false);
   const [modifyError, setModifyError] = useState<string | null>(null);
   const [modifyLogs, setModifyLogs] = useState<string[]>([]);
+  const [modifyThinking, setModifyThinking] = useState('');
+  const [showModifyThinking, setShowModifyThinking] = useState(false);
   const [modifyPanelOpen, setModifyPanelOpen] = useState(true);
   const [livePreviewHtml, setLivePreviewHtml] = useState<string | null>(null);
   const modifyStartedRef = useRef(false);
@@ -138,6 +142,10 @@ const ProjectDetailPage: React.FC = () => {
         return [...prev.slice(0, -1), last + message];
       });
     },
+    onThinking: (_agentKey, _agentName, message) => {
+      if (!message) return;
+      setModifyThinking((prev) => prev + message);
+    },
     onCodeChunk: (_code, fullHtml) => {
       if (fullHtml) {
         setLivePreviewHtml(fullHtml);
@@ -182,6 +190,8 @@ const ProjectDetailPage: React.FC = () => {
     setIsModifying(true);
     setModifyError(null);
     setModifyLogs([]);
+    setModifyThinking('');
+    setShowModifyThinking(false);
     setModifyPanelOpen(true);
     modifyStartedRef.current = true;
 
@@ -320,6 +330,10 @@ const ProjectDetailPage: React.FC = () => {
               const last = prev[prev.length - 1];
               return [...prev.slice(0, -1), last + message];
             });
+          },
+          onThinking: (_agent, _name, message) => {
+            if (!message) return;
+            setDebuggerThinking((prev) => prev + message);
           },
           onCodeChunk: (_code, fullHtml) => {
             if (fullHtml) {
@@ -526,45 +540,45 @@ const ProjectDetailPage: React.FC = () => {
     );
   }
 
-  return (
-    <div className="p-6 h-full overflow-auto bg-slate-50">
-      {/* Header */}
-      <div className="flex items-center gap-3 mb-6">
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={() => navigate('/dashboard/projects')}
-          className="shrink-0"
-        >
-          <ChevronLeft className="h-5 w-5" />
-        </Button>
-        <div className="flex-1 min-w-0">
-          <h1 className="text-2xl font-bold text-foreground truncate">
-            {project.name}
-          </h1>
-          <p className="text-sm text-muted-foreground">
-            创建于 {new Date(project.createdAt).toLocaleString('zh-CN')}
-          </p>
-        </div>
-        <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-violet-100 text-violet-700 text-sm font-medium">
-          <Zap className="w-4 h-4" />
-          {user?.credits ?? 0} Credits
-        </div>
-      </div>
+   return (
+     <div className="p-4 sm:p-6 h-full overflow-auto bg-slate-50">
+       {/* Header */}
+       <div className="flex items-start gap-3 mb-4 sm:mb-6">
+         <Button
+           variant="ghost"
+           size="icon"
+           onClick={() => navigate('/dashboard/projects')}
+           className="shrink-0"
+         >
+           <ChevronLeft className="h-5 w-5" />
+         </Button>
+         <div className="flex-1 min-w-0">
+           <h1 className="text-lg sm:text-2xl font-bold text-foreground">
+             {project.name}
+           </h1>
+           <p className="text-sm text-muted-foreground">
+             创建于 {new Date(project.createdAt).toLocaleString('zh-CN')}
+           </p>
+         </div>
+         <div className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-violet-100 text-violet-700 text-sm font-medium">
+           <Zap className="w-4 h-4" />
+           {user?.credits ?? 0} Credits
+         </div>
+       </div>
 
       {/* Tabs */}
-      <Tabs value={activeTab} onValueChange={setActiveTab} className="mb-6">
-        <TabsList>
-          <TabsTrigger value="preview">预览</TabsTrigger>
-          <TabsTrigger value="code">代码</TabsTrigger>
-          <TabsTrigger value="logs">构建日志</TabsTrigger>
-        </TabsList>
-      </Tabs>
+       <Tabs value={activeTab} onValueChange={setActiveTab} className="mb-4 sm:mb-6">
+         <TabsList className="flex flex-wrap">
+           <TabsTrigger value="preview">预览</TabsTrigger>
+           <TabsTrigger value="code">代码</TabsTrigger>
+           <TabsTrigger value="logs">构建日志</TabsTrigger>
+         </TabsList>
+       </Tabs>
 
-      {/* Preview tab */}
-      {activeTab === 'preview' && (
-        <div className="flex gap-6 items-start">
-          <div className="flex-1 min-w-0">
+       {/* Preview tab */}
+       {activeTab === 'preview' && (
+         <div className="flex flex-col lg:flex-row gap-4 lg:gap-6 items-start">
+           <div className="flex-1 min-w-0 w-full">
             {!isViewingLatest && (
               <div className="mb-4 flex items-center justify-between bg-amber-50 border border-amber-200 rounded-lg px-4 py-3">
                 <div className="flex items-center gap-2 text-amber-800 text-sm">
@@ -601,9 +615,9 @@ const ProjectDetailPage: React.FC = () => {
               </div>
             )}
 
-            {raceCompareMode && project.raceHtmlA && project.raceHtmlB ? (
-              <div className="space-y-4">
-                <div className="grid grid-cols-2 gap-4">
+             {raceCompareMode && project.raceHtmlA && project.raceHtmlB ? (
+               <div className="space-y-4">
+                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   {(['A', 'B'] as const).map((track) => (
                     <div key={track} className="rounded-xl overflow-hidden shadow-md border border-border bg-white">
                       <div className="flex items-center justify-between px-3 py-2 bg-slate-100 border-b border-border">
@@ -658,24 +672,24 @@ const ProjectDetailPage: React.FC = () => {
               />
             ) : (
               <>
-                <div className="flex items-center justify-between mb-3">
-                  <div className="flex items-center gap-2">
-                    <Button
-                      size="sm"
-                      variant={clickToEditEnabled ? 'default' : 'outline'}
-                      onClick={toggleClickToEdit}
-                      className={clickToEditEnabled ? 'bg-violet-600 hover:bg-violet-700' : ''}
-                    >
-                      <MousePointer2 className="w-4 h-4 mr-1.5" />
-                      点选编辑
-                    </Button>
-                    {clickToEditEnabled && hoveredElement && (
-                      <span className="text-xs px-2 py-1 bg-violet-100 text-violet-700 rounded-md font-mono">
-                        {hoveredElement.tag}
-                      </span>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-2">
+                 <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                   <div className="flex items-center gap-2 flex-wrap">
+                     <Button
+                       size="sm"
+                       variant={clickToEditEnabled ? 'default' : 'outline'}
+                       onClick={toggleClickToEdit}
+                       className={clickToEditEnabled ? 'bg-violet-600 hover:bg-violet-700' : ''}
+                     >
+                       <MousePointer2 className="w-4 h-4 mr-1.5" />
+                       点选编辑
+                     </Button>
+                     {clickToEditEnabled && hoveredElement && (
+                       <span className="text-xs px-2 py-1 bg-violet-100 text-violet-700 rounded-md font-mono">
+                         {hoveredElement.tag}
+                       </span>
+                     )}
+                   </div>
+                   <div className="flex items-center gap-2">
                     <div className="flex items-center bg-slate-100 rounded-md p-0.5 border border-border">
                       <Button
                         size="icon"
@@ -852,18 +866,44 @@ const ProjectDetailPage: React.FC = () => {
 
                {modifyPanelOpen && (
                  <div className="p-4 space-y-4">
-                   {(isModifying || modifyLogs.length > 0) && (
-                     <div className="bg-slate-900 rounded-lg p-3 max-h-40 overflow-y-auto font-mono text-xs text-slate-300 space-y-1">
-                       {modifyLogs.length === 0 && isModifying && (
-                         <div className="text-slate-500">正在准备修改...</div>
-                       )}
-                       {modifyLogs.map((line: string, i: number) => (
-                         <div key={i} className="whitespace-pre-wrap break-words">
-                           {line}
-                         </div>
-                       ))}
-                     </div>
-                   )}
+                    {(isModifying || modifyLogs.length > 0) && (
+                      <div className="space-y-2">
+                        {modifyThinking && (
+                          <div className="bg-slate-800 rounded-lg overflow-hidden">
+                            <button
+                              onClick={() => setShowModifyThinking(!showModifyThinking)}
+                              className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-slate-700/50 transition-colors"
+                            >
+                              <div className="flex items-center gap-2 text-xs text-slate-400">
+                                <Brain className="w-3.5 h-3.5" />
+                                <span>思考过程</span>
+                                <span className="text-slate-500">({modifyThinking.length.toLocaleString()} 字符)</span>
+                              </div>
+                              {showModifyThinking ? (
+                                <ChevronUp className="w-4 h-4 text-slate-400" />
+                              ) : (
+                                <ChevronDown className="w-4 h-4 text-slate-400" />
+                              )}
+                            </button>
+                            {showModifyThinking && (
+                              <div className="px-3 pb-2 font-mono text-xs text-slate-500 max-h-32 overflow-y-auto whitespace-pre-wrap break-all leading-relaxed">
+                                {modifyThinking}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                        <div className="bg-slate-900 rounded-lg p-3 max-h-40 overflow-y-auto font-mono text-xs text-slate-300 space-y-1">
+                          {modifyLogs.length === 0 && isModifying && (
+                            <div className="text-slate-500">正在准备修改...</div>
+                          )}
+                          {modifyLogs.map((line: string, i: number) => (
+                            <div key={i} className="whitespace-pre-wrap break-words">
+                              {line}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
 
                    {modifyError && (
                      <div className="text-sm text-red-500 bg-red-50 border border-red-200 rounded-md px-3 py-2">

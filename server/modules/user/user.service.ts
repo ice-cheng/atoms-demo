@@ -172,6 +172,6 @@ export class UserService {
       throw new NotFoundException('用户不存在');
     }
 
-    this.authService.invalidateUserTokens(userId);
+    await this.authService.invalidateUserTokens(userId);
   }
 }

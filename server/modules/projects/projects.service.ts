@@ -12,6 +12,7 @@ import type {
   ShareProjectResponse,
   SharedProjectResponse,
   BrandKit,
+  ProjectStatus,
 } from '@shared/api.interface';
 import { HtmlGeneratorService } from './html-generator.service';
 import { LlmGeneratorService, type StreamEvent } from './llm-generator.service';
@@ -158,7 +159,14 @@ export class ProjectsService {
         `[streamGenerateProject] 已被心跳终止，跳过完成写入 project=${projectId}`,
       );
     } else {
-      const html = finalHtml || this.htmlGenerator.generate(description, style);
+      const rawHtml = finalHtml || this.htmlGenerator.generate(description, style);
+      const responsiveResult = this.injectResponsiveBaseline(rawHtml);
+      const html = responsiveResult.html;
+      if (responsiveResult.changes.length > 0) {
+        this.logger.log(
+          `[streamGenerateProject] 响应式基线兜底: ${responsiveResult.changes.join('; ')}`,
+        );
+      }
       await this.db
         .update(atomsProjects)
         .set({
@@ -227,13 +235,22 @@ export class ProjectsService {
       );
     } else {
       const primaryHtml = htmlA || htmlB;
+      const responsiveResult = this.injectResponsiveBaseline(primaryHtml);
+      const finalPrimaryHtml = responsiveResult.html;
+      const finalHtmlA = htmlA ? this.injectResponsiveBaseline(htmlA).html : '';
+      const finalHtmlB = htmlB ? this.injectResponsiveBaseline(htmlB).html : '';
+      if (responsiveResult.changes.length > 0) {
+        this.logger.log(
+          `[streamRaceGenerateProject] 响应式基线兜底: ${responsiveResult.changes.join('; ')}`,
+        );
+      }
       await this.db
         .update(atomsProjects)
         .set({
           status: 'completed',
-          generatedHtml: primaryHtml,
-          raceHtmlA: htmlA,
-          raceHtmlB: htmlB,
+          generatedHtml: finalPrimaryHtml,
+          raceHtmlA: finalHtmlA,
+          raceHtmlB: finalHtmlB,
           agentLogs: JSON.stringify(this.buildAgentLogEntries(logsByAgent)),
           updatedAt: new Date(),
         })
@@ -241,8 +258,8 @@ export class ProjectsService {
 
       yield {
         type: 'race_done',
-        htmlA,
-        htmlB,
+        htmlA: finalHtmlA,
+        htmlB: finalHtmlB,
         timestamp: new Date().toISOString(),
       };
     }
@@ -269,9 +286,12 @@ export class ProjectsService {
       ? Math.max(...project.versions.map((v: ProjectVersion) => v.version ?? 0)) + 1
       : 1;
 
+    const responsiveResult = this.injectResponsiveBaseline(winnerHtml);
+    const finalWinnerHtml = responsiveResult.html;
+
     const winnerSnapshot: ProjectVersion = {
       id: `v_${Date.now()}`,
-      html: winnerHtml,
+      html: finalWinnerHtml,
       description: `竞速模式获胜版本（${winner}）`,
       createdAt: new Date().toISOString(),
       version: nextVersion + 1,
@@ -279,9 +299,10 @@ export class ProjectsService {
 
     const versions: ProjectVersion[] = [winnerSnapshot];
     if (loserHtml) {
+      const loserResponsive = this.injectResponsiveBaseline(loserHtml);
       const loserSnapshot: ProjectVersion = {
         id: `v_${Date.now()}_race_loser`,
-        html: loserHtml,
+        html: loserResponsive.html,
         description: `竞速模式备选版本（${winner === 'A' ? 'B' : 'A'}）`,
         createdAt: new Date().toISOString(),
         version: nextVersion,
@@ -294,7 +315,7 @@ export class ProjectsService {
     const updated = await this.db
       .update(atomsProjects)
       .set({
-        generatedHtml: winnerHtml,
+        generatedHtml: finalWinnerHtml,
         raceWinner: winner,
         versions: JSON.stringify(newVersions),
         updatedAt: new Date(),
@@ -540,6 +561,163 @@ export class ProjectsService {
       this.logger.log(`[暴力兜底] 未解析到目标颜色`);
     }
 
+    const bgColorMatchers = [
+      /(?:把|将)?(?:页面|网页|整个页面)?(?:的)?背景(?:的)?(?:颜色)?(?:改(?:成|为)?|换(?:成|为)?|变(?:为|成)?|调为|设为)[：: ]*(?:纯|深|浅)?(#[0-9a-fA-F]{6}|#[0-9a-fA-F]{3}|rgb\([^)]+\)|[\u4e00-\u9fa5]{1,3}色)/,
+      /背景色(?:改(?:成|为)?|换(?:成|为)?|变(?:为|成)?|调为|设为)?[：: ]*(?:纯|深|浅)?(#[0-9a-fA-F]{6}|#[0-9a-fA-F]{3}|rgb\([^)]+\)|[\u4e00-\u9fa5]{1,3}色)/,
+    ];
+    let targetBgColor = '';
+    for (const re of bgColorMatchers) {
+      const m = instruction.match(re);
+      if (m) {
+        targetBgColor = (m[1] || '').trim().replace(/^["'`]|["'`]$/g, '');
+        break;
+      }
+    }
+
+    const bgColorNameMap: Record<string, string> = {
+      红色: '#ff0000', 绿色: '#00ff00', 蓝色: '#0000ff',
+      白色: '#ffffff', 黑色: '#000000', 黄色: '#ffff00',
+      紫色: '#8b5cf6', 粉色: '#ec4899', 灰色: '#6b7280',
+      橙色: '#f97316', 青色: '#06b6d4', 靛蓝: '#4f46e5',
+    };
+
+    if (targetBgColor && bgColorNameMap[targetBgColor]) {
+      targetBgColor = bgColorNameMap[targetBgColor];
+    }
+
+    const isValidCssColor = (val: string): boolean => {
+      const v = val.trim().toLowerCase();
+      if (!v) return false;
+      if (/^#[0-9a-f]{3}$/.test(v) || /^#[0-9a-f]{6}$/.test(v)) return true;
+      if (/^rgb\s*\(/.test(v)) return true;
+      if (/^hsl\s*\(/.test(v)) return true;
+      const namedColors = new Set(['red', 'green', 'blue', 'white', 'black', 'yellow', 'purple', 'pink', 'gray', 'grey', 'orange', 'cyan', 'indigo', 'transparent', 'inherit', 'initial']);
+      if (namedColors.has(v)) return true;
+      return false;
+    };
+
+    if (targetBgColor && isValidCssColor(targetBgColor)) {
+      this.logger.log(`[暴力兜底] 解析到目标背景色: ${targetBgColor}`);
+      const bodyBgRe = /(body[^{]*\{[^}]*background(?:-color)?\s*:\s*)([^;\n]+)/i;
+      const bodyBgMatch = result.match(bodyBgRe);
+      if (bodyBgMatch && bodyBgMatch[2]) {
+        const oldBg = bodyBgMatch[2].trim();
+        const oldValid = isValidCssColor(oldBg);
+        if (!oldValid || oldBg.toLowerCase() !== targetBgColor.toLowerCase()) {
+          result = result.replace(bodyBgRe, `$1${targetBgColor}`);
+          changes.push(`背景色: body ${oldValid ? oldBg : `【非法值:${oldBg}】`} -> ${targetBgColor}`);
+          this.logger.log(`[暴力兜底] body背景色已替换: old="${oldBg}"(${oldValid ? '合法' : '非法'}) -> ${targetBgColor}`);
+        }
+      } else {
+        result = result.replace(
+          /<head>/i,
+          `<head>\n  <style>body { background-color: ${targetBgColor}; }</style>`,
+        );
+        changes.push(`背景色: 注入 body { background-color: ${targetBgColor} }`);
+        this.logger.log(`[暴力兜底] 注入body背景色: ${targetBgColor}`);
+      }
+    } else if (targetBgColor && !isValidCssColor(targetBgColor)) {
+      this.logger.warn(`[暴力兜底] 解析出的背景色"${targetBgColor}"本身不合法，跳过替换。指令="${instruction}"`);
+      const bodyBgRe = /(body[^{]*\{[^}]*background(?:-color)?\s*:\s*)([^;\n]+)/i;
+      const bodyBgMatch = result.match(bodyBgRe);
+      if (bodyBgMatch && bodyBgMatch[2]) {
+        const oldBg = bodyBgMatch[2].trim();
+        if (!isValidCssColor(oldBg)) {
+          changes.push(`背景色: 检测到非法值"${oldBg}"且目标色解析失败`);
+        }
+      }
+    } else {
+      const bodyBgRe = /(body[^{]*\{[^}]*background(?:-color)?\s*:\s*)([^;\n]+)/i;
+      const bodyBgMatch = result.match(bodyBgRe);
+      if (bodyBgMatch && bodyBgMatch[2]) {
+        const oldBg = bodyBgMatch[2].trim();
+        if (!isValidCssColor(oldBg)) {
+          this.logger.warn(`[暴力兜底] 检测到body背景色非法但无法从指令解析目标色: "${oldBg}"，指令="${instruction}"`);
+          changes.push(`背景色: 检测到非法值"${oldBg}"但无法解析目标色`);
+        }
+      }
+    }
+
+    return { html: result, changes };
+  }
+
+  private injectResponsiveBaseline(html: string): { html: string; changes: string[] } {
+    const changes: string[] = [];
+    let result = html;
+
+    const hasViewport = /<meta[^>]+name=["']viewport["'][^>]*>/i.test(result);
+    if (!hasViewport) {
+      result = result.replace(
+        /<head>/i,
+        `<head>\n  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">`,
+      );
+      changes.push('viewport: 注入响应式 meta 标签');
+      this.logger.log('[响应式兜底] 注入 viewport meta 标签');
+    }
+
+    const mediaCount = (result.match(/@media\s*\([^)]*max-width[^)]*\)/gi) || []).length;
+    if (mediaCount < 2) {
+      const responsiveCss = `
+<style>
+  /* === 响应式基线兜底 === */
+  * { box-sizing: border-box; }
+  body { min-width: 0; overflow-x: hidden; margin: 0; }
+  img, video, iframe { max-width: 100%; height: auto; }
+  .container, .container-fluid, .wrap, .wrapper, main, section, .content {
+    max-width: 100%;
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+  .row, .flex-row, [class*="flex"], [class*="grid"] {
+    flex-wrap: wrap;
+  }
+  button, .btn, [role="button"] {
+    min-height: 44px;
+    min-width: 44px;
+    padding: 10px 16px;
+  }
+  h1 { font-size: clamp(1.75rem, 5vw, 2.5rem); }
+  h2 { font-size: clamp(1.4rem, 4vw, 2rem); }
+  h3 { font-size: clamp(1.2rem, 3vw, 1.5rem); }
+  p, li, span, a { font-size: clamp(0.9rem, 2.5vw, 1rem); }
+  @media (max-width: 768px) {
+    .container, .container-fluid, .wrap, .wrapper, main, section {
+      padding-left: 12px;
+      padding-right: 12px;
+    }
+    .row, .grid-cols-2, .grid-cols-3, .grid-cols-4 { grid-template-columns: 1fr !important; }
+  }
+  @media (max-width: 480px) {
+    body { font-size: 14px; }
+    .container, .container-fluid, .wrap, .wrapper, main, section {
+      padding-left: 8px;
+      padding-right: 8px;
+    }
+    h1 { font-size: 1.5rem !important; }
+    h2 { font-size: 1.25rem !important; }
+    button, .btn { padding: 8px 12px; font-size: 14px; }
+  }
+</style>`;
+      result = result.replace(/<\/head>/i, `${responsiveCss}\n</head>`);
+      changes.push(`媒体查询: 注入通用响应式 CSS（原有 ${mediaCount} 档，补充至 ≥2 档）`);
+      this.logger.log(`[响应式兜底] 注入通用响应式 CSS，原有 ${mediaCount} 档 media query`);
+    }
+
+    const bodyOverflowHiddenRe = /(body\s*\{[^}]*overflow\s*:\s*)(hidden)([^;}]*)/i;
+    const bodyOverflowMatch = result.match(bodyOverflowHiddenRe);
+    if (bodyOverflowMatch) {
+      result = result.replace(bodyOverflowHiddenRe, '$1hidden$3');
+      const overflowXRe = /(body\s*\{[^}]*overflow-x\s*:\s*)([^;\n]+)/i;
+      if (!overflowXRe.test(result)) {
+        result = result.replace(
+          /(body\s*\{[^}]*)(overflow\s*:\s*hidden)/i,
+          '$1overflow-x: hidden; overflow-y: auto',
+        );
+        changes.push('overflow: body overflow:hidden → overflow-x:hidden + overflow-y:auto');
+        this.logger.log('[响应式兜底] body overflow:hidden 改为 overflow-x:hidden + overflow-y:auto');
+      }
+    }
+
     return { html: result, changes };
   }
 
@@ -558,6 +736,10 @@ export class ProjectsService {
     };
     let finalHtml = '';
     let hasError = false;
+    let isIncomplete = false;
+    let incompleteReason = '';
+
+    const versionDesc = (modifyInstruction?.trim() || description).trim().slice(0, 80);
 
     try {
       for await (const event of this.llmGenerator.rebuildStream(
@@ -572,8 +754,13 @@ export class ProjectsService {
         if (event.type === 'code_chunk' && event.fullHtml) {
           finalHtml = event.fullHtml;
         }
-        if (event.type === 'done' && event.fullHtml) {
+        if (event.type === 'agent_done' && event.fullHtml) {
           finalHtml = event.fullHtml;
+        }
+        if (event.type === 'incomplete') {
+          isIncomplete = true;
+          incompleteReason = event.reason || 'unknown';
+          if (event.fullHtml) finalHtml = event.fullHtml;
         }
         if (event.type === 'error') {
           hasError = true;
@@ -592,163 +779,113 @@ export class ProjectsService {
 
     if (hasError) {
       await this.markProjectFailed(projectId, userId, cost);
-    } else if (!finalHtml) {
-      if (!existingHtml) {
-        yield {
-          type: 'error',
-          error: '生成的 HTML 为空，请重试',
-          timestamp: new Date().toISOString(),
-        };
-        await this.markProjectFailed(projectId, userId, cost);
-      } else {
-        this.logger.log(
-          `[streamRebuildProject] LLM 输出为空，降级使用原HTML+暴力兜底 project=${projectId}`,
-        );
-        const currentSnapshot: ProjectVersion = {
-          id: `v_${Date.now()}`,
-          html: existingHtml,
-          description: description,
-          createdAt: new Date().toISOString(),
-          version: 0,
-        };
-
-        const newLogEntry: AgentLogEntry = {
-          agent: 'engineer',
-          agentName: 'Engineer',
-          message: '模型输出解析失败，已使用原内容+本地规则修改',
-          timestamp: new Date().toISOString(),
-        };
-
-        let html: string = existingHtml;
-
-        let effectiveInstruction = '';
-        if (modifyInstruction && modifyInstruction.trim()) {
-          effectiveInstruction = modifyInstruction.trim();
-        } else if (description && description.includes('修改要求')) {
-          const match = description.match(/修改要求[：:](.+)$/s);
-          if (match && match[1]?.trim()) {
-            effectiveInstruction = match[1].trim();
-          }
-        }
-
-        if (effectiveInstruction) {
-          const { html: processedHtml } = this.applyInstructionForcefully(
-            html,
-            effectiveInstruction,
-          );
-          html = processedHtml;
-        }
-
-        await this.db.transaction(async (tx) => {
-          const current = await tx
-            .select({ versions: atomsProjects.versions, agentLogs: atomsProjects.agentLogs })
-            .from(atomsProjects)
-            .where(eq(atomsProjects.id, projectId));
-
-          if (current.length === 0) return;
-
-          const existingVersions: ProjectVersion[] = Array.isArray(current[0].versions)
-            ? (current[0].versions as unknown as ProjectVersion[])
-            : [];
-
-          const nextVersion = existingVersions.length > 0
-            ? Math.max(...existingVersions.map((v: ProjectVersion) => v.version ?? 0)) + 1
-            : 1;
-          currentSnapshot.version = nextVersion;
-
-          const newResultSnapshot: ProjectVersion = {
-            id: `v_${Date.now()}`,
-            html: html,
-            description: description,
-            createdAt: new Date().toISOString(),
-            version: nextVersion + 1,
-          };
-
-          const newVersions: ProjectVersion[] = [
-            newResultSnapshot,
-            currentSnapshot,
-            ...existingVersions,
-          ].slice(0, 10);
-
-          const existingLogs: AgentLogEntry[] = Array.isArray(current[0].agentLogs)
-            ? (current[0].agentLogs as unknown as AgentLogEntry[])
-            : [];
-
-          await tx
-            .update(atomsProjects)
-            .set({
-              status: 'completed',
-              generatedHtml: html,
-              versions: JSON.stringify(newVersions),
-              agentLogs: JSON.stringify([newLogEntry, ...existingLogs].slice(0, 50)),
-              updatedAt: new Date(),
-            })
-            .where(eq(atomsProjects.id, projectId));
-        });
-
-        yield {
-          type: 'done',
-          fullHtml: html,
-          timestamp: new Date().toISOString(),
-        };
-      }
+    } else if (!finalHtml && !existingHtml) {
+      yield {
+        type: 'error',
+        error: '生成的 HTML 为空，请重试',
+        timestamp: new Date().toISOString(),
+      };
+      await this.markProjectFailed(projectId, userId, cost);
     } else if (abortSignal?.aborted) {
       this.logger.log(
         `[streamRebuildProject] 已被心跳终止，跳过完成写入 project=${projectId}`,
       );
     } else {
+      const baselineHtml = finalHtml || existingHtml;
+      const needForceFallback = isIncomplete || !finalHtml;
+
+      this.logger.log(
+        `[streamRebuildProject] 后处理: incomplete=${isIncomplete}(${incompleteReason}), finalHtml非空=${!!finalHtml}, finalHtml长度=${finalHtml?.length || 0}, 暴力兜底强制=true（保险补刀）`,
+      );
+
       const currentSnapshot: ProjectVersion = {
         id: `v_${Date.now()}`,
         html: existingHtml,
-        description: description,
+        description: `修改前（${versionDesc}）`,
         createdAt: new Date().toISOString(),
         version: 0,
       };
 
-      const newLogEntry: AgentLogEntry = {
-        agent: 'engineer',
-        agentName: 'Engineer',
-        message: logsByAgent['engineer'] || '代码已更新',
-        timestamp: new Date().toISOString(),
-      };
-
-      let html = finalHtml || existingHtml;
-
-      this.logger.log(
-        `[暴力兜底] 进入后处理: finalHtml非空=${!!finalHtml}, finalHtml长度=${finalHtml?.length || 0}, 指令非空=${!!modifyInstruction?.trim()}`,
-      );
+      let html: string = baselineHtml;
 
       let effectiveInstruction = '';
       if (modifyInstruction && modifyInstruction.trim()) {
         effectiveInstruction = modifyInstruction.trim();
-        this.logger.log(`[暴力兜底] 使用modifyInstruction作为指令源`);
       } else if (description && description.includes('修改要求')) {
         const match = description.match(/修改要求[：:](.+)$/s);
         if (match && match[1]?.trim()) {
           effectiveInstruction = match[1].trim();
-          this.logger.log(`[暴力兜底] 从description提取修改指令: "${effectiveInstruction.slice(0, 200)}"`);
         }
       }
 
+      let fallbackChanges: string[] = [];
       if (effectiveInstruction) {
-        this.logger.log(`[暴力兜底] 原始指令: "${effectiveInstruction.slice(0, 200)}"`);
-
-        const titleMatch = finalHtml.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-        this.logger.log(
-          `[暴力兜底] LLM输出title: "${titleMatch ? titleMatch[1].trim() : '(无title)'}", html前200字符: "${finalHtml.slice(0, 200).replace(/\n/g, '\\n')}"`,
-        );
-
         const { html: processedHtml, changes } = this.applyInstructionForcefully(
           html,
           effectiveInstruction,
         );
         html = processedHtml;
-
+        fallbackChanges = changes;
         this.logger.log(
-          `[暴力兜底] 后处理完成: 改动${changes.length}项 [${changes.join('; ')}], 最终html长度=${html.length}`,
+          `[streamRebuildProject] 暴力兜底保险补刀: 改动${changes.length}项 [${changes.join('; ')}], 最终html长度=${html.length}`,
         );
-      } else {
-        this.logger.log('[暴力兜底] 无修改指令，跳过后处理');
+      }
+
+      const newLogEntry: AgentLogEntry = {
+        agent: 'engineer',
+        agentName: 'Engineer',
+        message: needForceFallback
+          ? `模型输出不完整，已使用暴力兜底修复（原因：${incompleteReason || '输出为空'}）${fallbackChanges.length > 0 ? `；补充修改：${fallbackChanges.join('；')}` : ''}`
+          : (fallbackChanges.length > 0
+            ? `代码已更新（保险补刀：${fallbackChanges.join('；')}）`
+            : (logsByAgent['engineer'] || '代码已更新')),
+        timestamp: new Date().toISOString(),
+      };
+
+      const isHtmlComplete = /<\/html>\s*$/i.test(html.trim());
+
+      let bgColorValid = true;
+      const bodyBgRe = /(?:body[^{]*\{[^}]*background(?:-color)?\s*:\s*)([^;\n]+)/i;
+      const validBgRe = /^(?:#(?:[0-9a-f]{3}|[0-9a-f]{6})|rgb\s*\(|hsl\s*\(|red|green|blue|white|black|yellow|purple|pink|gray|grey|orange|cyan|indigo|transparent|inherit|initial)$/i;
+      const finalBgMatch = html.match(bodyBgRe);
+      if (finalBgMatch && finalBgMatch[1]) {
+        const bgVal = finalBgMatch[1].trim();
+        bgColorValid = validBgRe.test(bgVal);
+        if (!bgColorValid) {
+          this.logger.warn(`[streamRebuildProject] body背景色非法，尝试二次兜底: "${bgVal}"`);
+          const retry = this.applyInstructionForcefully(html, effectiveInstruction || '');
+          const reMatch = retry.html.match(bodyBgRe);
+          if (reMatch && reMatch[1] && validBgRe.test(reMatch[1].trim())) {
+            html = retry.html;
+            fallbackChanges = [...fallbackChanges, ...retry.changes];
+            bgColorValid = true;
+            this.logger.log(`[streamRebuildProject] 二次兜底成功，背景色已修正为: ${reMatch[1].trim()}`);
+          } else {
+            const fallbackColor = '#4f46e5';
+            const replaced = html.replace(bodyBgRe, `$1${fallbackColor}`);
+            if (replaced !== html) {
+              html = replaced;
+              bgColorValid = true;
+              fallbackChanges = [...fallbackChanges, `背景色: 自动修正非法值"${bgVal}" → ${fallbackColor}`];
+              this.logger.warn(`[streamRebuildProject] 背景色非法，已自动降级替换为 ${fallbackColor}: "${bgVal}"`);
+            } else if (effectiveInstruction && /背景|背景色/.test(effectiveInstruction)) {
+              hasError = true;
+              this.logger.error(`[streamRebuildProject] 背景色非法且无法替换，标记失败: "${reMatch?.[1]?.trim() ?? '无匹配'}"`);
+            } else {
+              bgColorValid = true;
+              this.logger.warn(`[streamRebuildProject] 背景色非法但指令不涉及背景色，放行`);
+            }
+          }
+        }
+      }
+
+      const responsiveResult = this.injectResponsiveBaseline(html);
+      html = responsiveResult.html;
+      if (responsiveResult.changes.length > 0) {
+        fallbackChanges = [...fallbackChanges, ...responsiveResult.changes];
+        this.logger.log(
+          `[streamRebuildProject] 响应式基线兜底: ${responsiveResult.changes.join('; ')}`,
+        );
       }
 
       await this.db.transaction(async (tx) => {
@@ -771,7 +908,7 @@ export class ProjectsService {
         const newResultSnapshot: ProjectVersion = {
           id: `v_${Date.now()}`,
           html: html,
-          description: description,
+          description: versionDesc,
           createdAt: new Date().toISOString(),
           version: nextVersion + 1,
         };
@@ -786,10 +923,12 @@ export class ProjectsService {
           ? (current[0].agentLogs as unknown as AgentLogEntry[])
           : [];
 
+        const targetStatus: ProjectStatus = (isHtmlComplete && (!hasError || bgColorValid)) ? 'completed' : 'failed';
+
         await tx
           .update(atomsProjects)
           .set({
-            status: 'completed',
+            status: targetStatus,
             generatedHtml: html,
             versions: JSON.stringify(newVersions),
             agentLogs: JSON.stringify([newLogEntry, ...existingLogs].slice(0, 50)),
@@ -797,6 +936,51 @@ export class ProjectsService {
           })
           .where(eq(atomsProjects.id, projectId));
       });
+
+      if (!isHtmlComplete) {
+        let errorMsg = '生成的 HTML 不完整，请重试';
+        switch (incompleteReason) {
+          case 'empty_input':
+            errorMsg = '模型未输出有效代码内容，请换一种描述方式或精简指令后重试';
+            break;
+          case 'no_html_found':
+            errorMsg = '模型输出中未找到有效 HTML 代码，请换一种描述方式或重试';
+            break;
+          case 'truncated_no_close_tag':
+            errorMsg = '生成内容过长被截断，请精简修改指令后重试';
+            break;
+          case 'extract_failed':
+            errorMsg = 'HTML 解析失败，请换一种描述方式重试';
+            break;
+          default:
+            break;
+        }
+        yield {
+          type: 'error',
+          error: errorMsg,
+          timestamp: new Date().toISOString(),
+        };
+      } else if (hasError) {
+        if (!bgColorValid) {
+          yield {
+            type: 'error',
+            error: '背景色修改失败，生成的 CSS 颜色值不合法，请重试',
+            timestamp: new Date().toISOString(),
+          };
+        } else {
+          yield {
+            type: 'error',
+            error: '生成失败，请重试',
+            timestamp: new Date().toISOString(),
+          };
+        }
+      } else {
+        yield {
+          type: 'done',
+          fullHtml: html,
+          timestamp: new Date().toISOString(),
+        };
+      }
     }
   }
 
@@ -870,6 +1054,14 @@ export class ProjectsService {
         `[streamDebugFix] 已被心跳终止，跳过完成写入 project=${projectId}`,
       );
     } else {
+      const responsiveResult = this.injectResponsiveBaseline(finalHtml);
+      const fixedHtml = responsiveResult.html;
+      if (responsiveResult.changes.length > 0) {
+        this.logger.log(
+          `[streamDebugFix] 响应式基线兜底: ${responsiveResult.changes.join('; ')}`,
+        );
+      }
+
       const currentSnapshot: ProjectVersion = {
         id: `v_${Date.now()}`,
         html: existingHtml,
@@ -897,7 +1089,7 @@ export class ProjectsService {
 
         const newResultSnapshot: ProjectVersion = {
           id: `v_${Date.now()}`,
-          html: finalHtml,
+          html: fixedHtml,
           description: 'Debugger 修复后版本',
           createdAt: new Date().toISOString(),
           version: nextVersion + 1,
@@ -923,7 +1115,7 @@ export class ProjectsService {
         await tx
           .update(atomsProjects)
           .set({
-            generatedHtml: finalHtml,
+            generatedHtml: fixedHtml,
             status: 'completed',
             versions: JSON.stringify(newVersions),
             agentLogs: JSON.stringify([newLogEntry, ...existingLogs].slice(0, 50)),

@@ -23,7 +23,7 @@ import type {
 } from '@shared/api.interface';
 
 export interface StreamBuildEvent {
-  type: 'project_created' | 'rebuild_started' | 'agent_start' | 'log' | 'code_chunk' | 'agent_done' | 'done' | 'error' | 'fixer_start' | 'fixer_log' | 'fixer_done' | 'race_done';
+  type: 'project_created' | 'rebuild_started' | 'agent_start' | 'log' | 'thinking' | 'code_chunk' | 'agent_done' | 'done' | 'error' | 'fixer_start' | 'fixer_log' | 'fixer_done' | 'race_done';
   agent?: AgentLogEntry['agent'];
   agentName?: string;
   message?: string;
@@ -44,6 +44,7 @@ export interface StreamBuildCallbacks {
   onProjectCreated?: (project: Project) => void;
   onAgentStart?: (agent: string, agentName: string) => void;
   onLog?: (agent: string, agentName: string, message: string) => void;
+  onThinking?: (agent: string, agentName: string, message: string) => void;
   onCodeChunk?: (code: string, fullHtml: string) => void;
   onAgentDone?: (agent: string, agentName: string) => void;
   onDone?: (fullHtml: string) => void;
@@ -53,6 +54,7 @@ export interface StreamBuildCallbacks {
 
 export interface RaceStreamBuildCallbacks extends StreamBuildCallbacks {
   onTrackLog?: (track: 'A' | 'B', agent: string, agentName: string, message: string) => void;
+  onTrackThinking?: (track: 'A' | 'B', agent: string, agentName: string, message: string) => void;
   onTrackAgentStart?: (track: 'A' | 'B', agent: string, agentName: string) => void;
   onTrackAgentDone?: (track: 'A' | 'B', agent: string, agentName: string) => void;
   onTrackCodeChunk?: (track: 'A' | 'B', code: string, fullHtml: string) => void;
@@ -196,7 +198,7 @@ export async function getSharedProject(
 ): Promise<SharedProjectResponse> {
   try {
     const response = await axiosForBackend.get(
-      `/openapi/projects/share/${token}`,
+      `/api/projects/share/${token}`,
     );
     return response.data;
   } catch (error) {
@@ -267,14 +269,38 @@ function buildStreamUrl(path: string): string {
   return base + path;
 }
 
+const TOKEN_KEY = 'atoms_demo_token';
+
 function getAuthHeaders(): Record<string, string> {
-  const token = localStorage.getItem('atoms_demo_token');
+  const token = localStorage.getItem(TOKEN_KEY);
   const csrfToken = getCsrfTokenFromCookie() || (window.csrfToken ?? '');
+  if (!token) {
+    logger.warn('[auth] SSE 请求无 token，将派发 token-cleared 事件');
+    const event = new CustomEvent('auth:token-cleared', { detail: { reason: 'missing' } });
+    window.dispatchEvent(event);
+  }
   return {
     'Content-Type': 'application/json',
     'X-Suda-Csrf-Token': csrfToken || '',
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
   };
+}
+
+function handleSseHttpError(status: number, errText: string): string {
+  if (status === 401) {
+    const hadToken = !!localStorage.getItem(TOKEN_KEY);
+    logger.warn('[auth] SSE 返回 401，hadToken=', hadToken);
+    if (hadToken) {
+      localStorage.removeItem(TOKEN_KEY);
+      localStorage.removeItem('atoms_demo_user');
+    }
+    const event = new CustomEvent('auth:token-cleared', {
+      detail: { reason: hadToken ? '401-invalid' : '401-missing' },
+    });
+    window.dispatchEvent(event);
+    return hadToken ? '登录已过期，请重新登录' : '请先登录后再发起构建';
+  }
+  return `请求失败: ${status} ${errText}`;
 }
 
 let heartbeatTimer: number | null = null;
@@ -312,9 +338,11 @@ export async function streamCreateProject(
   data: CreateProjectRequest,
   callbacks: StreamBuildCallbacks,
 ): Promise<void> {
-  const token = localStorage.getItem('atoms_demo_token');
-  const csrfToken = getCsrfTokenFromCookie() || (window.csrfToken ?? '');
   const authHeaders = getAuthHeaders();
+  if (!authHeaders.Authorization) {
+    callbacks.onError?.('请先登录后再发起构建');
+    return;
+  }
   // eslint-disable-next-line no-restricted-syntax -- SSE 流式读取必须使用 fetch + ReadableStream，axios 不支持
   const response = await fetch(buildStreamUrl('/api/projects/stream/generate'), {
     method: 'POST',
@@ -325,7 +353,7 @@ export async function streamCreateProject(
 
   if (!response.ok) {
     const errText = await response.text();
-    callbacks.onError?.(`请求失败: ${response.status} ${errText}`);
+    callbacks.onError?.(handleSseHttpError(response.status, errText));
     return;
   }
 
@@ -337,6 +365,8 @@ export async function streamCreateProject(
 
   const decoder = new TextDecoder();
   let buffer = '';
+  let eventType = '';
+  let eventData = '';
 
   try {
     while (true) {
@@ -345,8 +375,6 @@ export async function streamCreateProject(
 
       buffer += decoder.decode(value, { stream: true });
 
-      let eventType = '';
-      let eventData = '';
       const lines = buffer.split('\n');
       buffer = lines.pop() || '';
 
@@ -374,6 +402,17 @@ export async function streamCreateProject(
     logger.error('流式创建项目失败', error);
     callbacks.onError?.(error instanceof Error ? error.message : '未知错误');
   } finally {
+    if (eventType && eventData) {
+      try {
+        const parsed = JSON.parse(eventData) as StreamBuildEvent;
+        if (parsed.type === 'project_created' && (parsed as unknown as Project).id) {
+          startHeartbeat((parsed as unknown as Project).id);
+        }
+        handleStreamEvent(parsed, eventType, callbacks);
+      } catch {
+        logger.warn('解析 SSE 尾部事件失败', eventType, eventData);
+      }
+    }
     stopHeartbeat();
   }
 }
@@ -384,6 +423,10 @@ export async function streamRebuildProject(
   callbacks: StreamBuildCallbacks,
 ): Promise<void> {
   const authHeaders = getAuthHeaders();
+  if (!authHeaders.Authorization) {
+    callbacks.onError?.('请先登录后再发起构建');
+    return;
+  }
   // eslint-disable-next-line no-restricted-syntax -- SSE 流式读取必须使用 fetch + ReadableStream，axios 不支持
   const response = await fetch(buildStreamUrl(`/api/projects/${id}/rebuild/stream`), {
     method: 'POST',
@@ -394,7 +437,7 @@ export async function streamRebuildProject(
 
   if (!response.ok) {
     const errText = await response.text();
-    callbacks.onError?.(`请求失败: ${response.status} ${errText}`);
+    callbacks.onError?.(handleSseHttpError(response.status, errText));
     return;
   }
 
@@ -406,6 +449,8 @@ export async function streamRebuildProject(
 
   const decoder = new TextDecoder();
   let buffer = '';
+  let eventType = '';
+  let eventData = '';
 
   try {
     while (true) {
@@ -414,8 +459,6 @@ export async function streamRebuildProject(
 
       buffer += decoder.decode(value, { stream: true });
 
-      let eventType = '';
-      let eventData = '';
       const lines = buffer.split('\n');
       buffer = lines.pop() || '';
 
@@ -443,6 +486,17 @@ export async function streamRebuildProject(
     logger.error('流式重建失败', error);
     callbacks.onError?.(error instanceof Error ? error.message : '未知错误');
   } finally {
+    if (eventType && eventData) {
+      try {
+        const parsed = JSON.parse(eventData) as StreamBuildEvent;
+        if (parsed.type === 'rebuild_started') {
+          startHeartbeat(id);
+        }
+        handleStreamEvent(parsed, eventType, callbacks);
+      } catch {
+        logger.warn('解析 SSE 尾部事件失败', eventType, eventData);
+      }
+    }
     stopHeartbeat();
   }
 }
@@ -453,6 +507,10 @@ export async function streamDebugFix(
   callbacks: StreamBuildCallbacks,
 ): Promise<void> {
   const authHeaders = getAuthHeaders();
+  if (!authHeaders.Authorization) {
+    callbacks.onError?.('请先登录后再发起构建');
+    return;
+  }
   // eslint-disable-next-line no-restricted-syntax -- SSE 流式读取必须使用 fetch + ReadableStream，axios 不支持
   const response = await fetch(buildStreamUrl(`/api/projects/${id}/debug/stream`), {
     method: 'POST',
@@ -463,7 +521,7 @@ export async function streamDebugFix(
 
   if (!response.ok) {
     const errText = await response.text();
-    callbacks.onError?.(`请求失败: ${response.status} ${errText}`);
+    callbacks.onError?.(handleSseHttpError(response.status, errText));
     return;
   }
 
@@ -475,6 +533,8 @@ export async function streamDebugFix(
 
   const decoder = new TextDecoder();
   let buffer = '';
+  let eventType = '';
+  let eventData = '';
 
   startHeartbeat(id);
 
@@ -485,8 +545,6 @@ export async function streamDebugFix(
 
       buffer += decoder.decode(value, { stream: true });
 
-      let eventType = '';
-      let eventData = '';
       const lines = buffer.split('\n');
       buffer = lines.pop() || '';
 
@@ -511,6 +569,14 @@ export async function streamDebugFix(
     logger.error('智能调试失败', error);
     callbacks.onError?.(error instanceof Error ? error.message : '未知错误');
   } finally {
+    if (eventType && eventData) {
+      try {
+        const parsed = JSON.parse(eventData) as StreamBuildEvent;
+        handleStreamEvent(parsed, eventType, callbacks);
+      } catch {
+        logger.warn('解析 SSE 尾部事件失败', eventType, eventData);
+      }
+    }
     stopHeartbeat();
   }
 }
@@ -543,6 +609,13 @@ function handleStreamEvent(
         trackCallbacks.onTrackLog(event.track, event.agent || '', event.agentName || '', event.message || '');
       } else {
         callbacks.onLog?.(event.agent || '', event.agentName || '', event.message || '');
+      }
+      break;
+    case 'thinking':
+      if (event.track && trackCallbacks.onTrackThinking) {
+        trackCallbacks.onTrackThinking(event.track, event.agent || '', event.agentName || '', event.message || '');
+      } else {
+        callbacks.onThinking?.(event.agent || '', event.agentName || '', event.message || '');
       }
       break;
     case 'code_chunk':

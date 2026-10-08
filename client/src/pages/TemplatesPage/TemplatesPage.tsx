@@ -51,20 +51,20 @@ const TemplatesPage: React.FC = () => {
   };
 
   return (
-    <div className="p-8 bg-slate-50 min-h-full">
-      <div className="max-w-6xl mx-auto">
-        {/* Header */}
-        <div className="mb-10 text-center">
-          <h1 className="text-4xl font-bold text-foreground mb-3">
-            模板库
-          </h1>
-          <p className="text-lg text-muted-foreground">
-            从精选模板开始，快速构建你的应用
-          </p>
-        </div>
+     <div className="p-4 sm:p-8 bg-slate-50 min-h-full">
+       <div className="max-w-6xl mx-auto">
+         {/* Header */}
+         <div className="mb-8 sm:mb-10 text-center">
+           <h1 className="text-2xl sm:text-3xl md:text-4xl font-bold text-foreground mb-2 sm:mb-3">
+             模板库
+           </h1>
+           <p className="text-base sm:text-lg text-muted-foreground">
+             从精选模板开始，快速构建你的应用
+           </p>
+         </div>
 
-        {/* Template grid */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+         {/* Template grid */}
+         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-5">
           {allTemplates.map((template: Template) => {
             const Icon = templateIcons[template.id] || Rocket;
             const gradient = templateGradients[template.id] || 'from-violet-500 to-purple-600';

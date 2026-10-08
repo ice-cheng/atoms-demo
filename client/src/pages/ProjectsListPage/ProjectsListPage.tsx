@@ -65,11 +65,11 @@ const ProjectsListPage: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-slate-50">
-      <div className="max-w-6xl mx-auto px-6 py-8">
-        {/* 顶部标题 + 新建按钮 */}
-        <div className="flex items-center justify-between mb-6">
-          <div>
-            <h1 className="text-2xl font-bold text-slate-900 mb-1">我的项目</h1>
+       <div className="max-w-6xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
+         {/* 顶部标题 + 新建按钮 */}
+         <div className="flex items-center justify-between mb-4 sm:mb-6">
+           <div>
+             <h1 className="text-xl sm:text-2xl font-bold text-slate-900 mb-1">我的项目</h1>
             <p className="text-sm text-slate-500">
               共 {projects.length} 个项目
             </p>
@@ -113,8 +113,8 @@ const ProjectsListPage: React.FC = () => {
         </div>
 
         {/* 项目列表 / 空状态 */}
-        {loading ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+         {loading ? (
+           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
             {Array.from({ length: 6 }).map((_, i) => (
               <Skeleton key={i} className="h-40 rounded-xl" />
             ))}
@@ -139,10 +139,10 @@ const ProjectsListPage: React.FC = () => {
             </div>
           )
         ) : (
-          <div
-            className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"
-            data-ai-section-type="card-list"
-          >
+           <div
+             className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4"
+             data-ai-section-type="card-list"
+           >
             {filteredProjects.map((project) => (
               <ProjectCard
                 key={project.id}

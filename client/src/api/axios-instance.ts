@@ -1,6 +1,5 @@
 import { axiosForBackend } from '@lark-apaas/client-toolkit/utils/getAxiosForBackend';
 import { logger } from '@lark-apaas/client-toolkit/logger';
-import { getCurrentUser } from './auth';
 
 const TOKEN_KEY = 'atoms_demo_token';
 
@@ -12,14 +11,6 @@ function getCsrfTokenFromCookie(): string {
     if (k === name) return decodeURIComponent(v);
   }
   return '';
-}
-
-let isRefreshing = false;
-let pendingQueue: Array<() => void> = [];
-
-function processQueue(): void {
-  pendingQueue.forEach((resolve: () => void) => resolve());
-  pendingQueue = [];
 }
 
 axiosForBackend.interceptors.request.use(
@@ -63,47 +54,20 @@ axiosForBackend.interceptors.response.use(
     }
 
     if (status === 401) {
-      if (!originalRequest) return Promise.reject(error);
+      const hadToken = !!(originalRequest?.headers?.Authorization || localStorage.getItem(TOKEN_KEY));
+      const skipClear = originalRequest?._skipAuthClear;
 
-      if (originalRequest._retry || originalRequest._skipAuthRefresh) {
-        logger.warn('[auth] 401 重试仍失败或鉴权端点失败，清空登录态');
+      if (hadToken && !skipClear) {
+        logger.warn('[auth] 401 且请求携带了 token，清空登录态');
         localStorage.removeItem(TOKEN_KEY);
         localStorage.removeItem('atoms_demo_user');
-        if (isRefreshing) {
-          isRefreshing = false;
-          processQueue();
-        }
-        return Promise.reject(error);
+        const event = new CustomEvent('auth:token-cleared', { detail: { reason: '401' } });
+        window.dispatchEvent(event);
+      } else {
+        logger.warn('[auth] 401 但请求未携带 token，保留登录态（可能是公网接口或时序问题）');
       }
 
-      if (isRefreshing) {
-        return new Promise<void>((resolve: () => void) => {
-          pendingQueue.push(resolve);
-        }).then(() => axiosForBackend(originalRequest));
-      }
-
-      originalRequest._retry = true;
-      isRefreshing = true;
-
-      try {
-        const token = localStorage.getItem(TOKEN_KEY);
-        if (!token) throw new Error('no token');
-        await axiosForBackend.get('/api/auth/me', {
-          headers: { Authorization: `Bearer ${token}` },
-          _skipAuthRefresh: true,
-        } as any);
-        logger.log({ level: 'info', args: ['401 静默恢复成功'] });
-        processQueue();
-        return axiosForBackend(originalRequest);
-      } catch (refreshError) {
-        logger.warn('401 静默恢复失败', refreshError);
-        localStorage.removeItem(TOKEN_KEY);
-        localStorage.removeItem('atoms_demo_user');
-        processQueue();
-        return Promise.reject(refreshError);
-      } finally {
-        isRefreshing = false;
-      }
+      return Promise.reject(error);
     }
 
     return Promise.reject(error);

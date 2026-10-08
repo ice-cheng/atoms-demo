@@ -72,7 +72,7 @@ const SharePage: React.FC = () => {
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-violet-50 flex flex-col">
       {/* Header */}
       <header className="border-b border-border bg-white/80 backdrop-blur-sm">
-        <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-violet-500 to-indigo-600 flex items-center justify-center">
               <Sparkles className="w-4 h-4 text-white" />
@@ -86,21 +86,21 @@ const SharePage: React.FC = () => {
       </header>
 
       {/* Main content */}
-      <main className="flex-1 px-6 py-8">
+      <main className="flex-1 px-4 py-6 sm:px-6 sm:py-8">
         <div className="max-w-5xl mx-auto">
           {/* Project info */}
-          <div className="text-center mb-8">
-            <h1 className="text-3xl font-bold text-foreground mb-2">
-              {project.name}
+          <div className="text-center mb-6 sm:mb-8">
+            <h1 className="text-2xl sm:text-3xl font-bold text-foreground mb-2">
+              {project?.name || '分享项目'}
             </h1>
             <p className="text-slate-500 max-w-2xl mx-auto">
-              {project.description}
+              {project?.description || ''}
             </p>
           </div>
 
           {/* Browser-style iframe preview */}
           <div className="rounded-xl overflow-hidden shadow-2xl border border-border bg-white">
-            <div className="flex items-center gap-2 px-4 py-2.5 bg-slate-100 border-b border-border">
+            <div className="flex items-center gap-2 px-3 sm:px-4 py-2.5 bg-slate-100 border-b border-border">
               <div className="flex gap-1.5">
                 <div className="w-3 h-3 rounded-full bg-red-400" />
                 <div className="w-3 h-3 rounded-full bg-yellow-400" />
@@ -110,7 +110,7 @@ const SharePage: React.FC = () => {
                 <div className="flex items-center gap-1.5 bg-white rounded-md px-3 py-1 text-xs text-muted-foreground w-full max-w-md border border-border">
                   <Globe className="w-3.5 h-3.5 shrink-0" />
                   <span className="truncate">
-                    {project.name.toLowerCase().replace(/\s+/g, '-')}.atoms.demo
+                    {(project?.name || 'project').toLowerCase().replace(/\s+/g, '-')}.atoms.demo
                   </span>
                 </div>
               </div>
@@ -118,8 +118,8 @@ const SharePage: React.FC = () => {
             </div>
             <div className="bg-white">
               <AutoHeightIframe
-                srcDoc={project.generatedHtml}
-                title={project.name}
+                srcDoc={project?.generatedHtml || ''}
+                title={project?.name || '分享项目'}
                 minHeight={600}
                 mode="auto-height"
               />
@@ -130,7 +130,7 @@ const SharePage: React.FC = () => {
 
       {/* Footer */}
       <footer className="border-t border-border bg-white/80 backdrop-blur-sm">
-        <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-center gap-2 text-sm text-slate-400">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-center gap-2 text-sm text-slate-400">
           <Sparkles className="w-4 h-4 text-violet-400" />
           <span>
             Built with{' '}

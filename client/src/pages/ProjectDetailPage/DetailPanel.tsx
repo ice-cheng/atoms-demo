@@ -140,7 +140,7 @@ const DetailPanel: React.FC<DetailPanelProps> = ({
   };
 
   return (
-    <div className="w-[340px] shrink-0 space-y-6">
+     <div className="w-full lg:w-[340px] shrink-0 space-y-6">
       {/* Project info */}
       <Card>
         <CardHeader className="pb-3">

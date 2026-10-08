@@ -68,8 +68,17 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     };
     void initAuth();
 
+    const handleTokenCleared = (): void => {
+      setToken(null);
+      setUser(null);
+      localStorage.removeItem(TOKEN_KEY);
+      localStorage.removeItem(USER_KEY);
+    };
+    window.addEventListener('auth:token-cleared', handleTokenCleared);
+
     return () => {
       window.clearTimeout(timeoutId);
+      window.removeEventListener('auth:token-cleared', handleTokenCleared);
     };
   }, []);
 

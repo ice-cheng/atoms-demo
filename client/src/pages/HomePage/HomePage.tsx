@@ -37,7 +37,7 @@ const HomePage: React.FC = () => {
     <div className="min-h-screen bg-gradient-to-b from-white to-[hsl(262_83%_98%)]">
       {/* Navbar */}
       <header className="sticky top-0 z-50 border-b border-[hsl(220_14%_89%)]/60 bg-white/80 backdrop-blur-md">
-        <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-6">
+        <div className="mx-auto flex h-14 md:h-16 max-w-6xl items-center justify-between px-4 sm:px-6">
           <Link
             to="/"
             className="flex items-center gap-2 text-lg font-bold text-[hsl(262_83%_58%)]"
@@ -45,7 +45,7 @@ const HomePage: React.FC = () => {
             <Sparkles className="size-5" />
             <span>Atoms Demo</span>
           </Link>
-          <nav className="flex items-center gap-3">
+          <nav className="flex items-center gap-1 sm:gap-3">
             <Button
               variant="ghost"
               size="sm"
@@ -66,7 +66,7 @@ const HomePage: React.FC = () => {
       </header>
 
       {/* Hero */}
-      <section className="relative overflow-hidden px-6 pt-20 pb-24">
+      <section className="relative overflow-hidden px-4 sm:px-6 pt-16 pb-20 sm:pt-20 sm:pb-24">
         <div
           className="pointer-events-none absolute -top-40 left-1/2 -translate-x-1/2 size-[800px] rounded-full bg-[hsl(262_83%_58%)]/10 blur-3xl"
           aria-hidden
@@ -82,7 +82,7 @@ const HomePage: React.FC = () => {
             <span>AI Native App Builder</span>
           </div>
 
-          <h1 className="bg-gradient-to-r from-foreground via-[hsl(262_83%_58%)] to-[hsl(280_83%_60%)] bg-clip-text text-5xl font-bold leading-tight text-transparent md:text-6xl">
+          <h1 className="bg-gradient-to-r from-foreground via-[hsl(262_83%_58%)] to-[hsl(280_83%_60%)] bg-clip-text text-3xl sm:text-4xl md:text-5xl font-bold leading-tight text-transparent md:text-6xl">
             用自然语言，
             <br />
             构建你的下一个产品
@@ -110,10 +110,10 @@ const HomePage: React.FC = () => {
       </section>
 
       {/* Features */}
-      <section className="px-6 py-20">
+      <section className="px-4 sm:px-6 py-16 sm:py-20">
         <div className="mx-auto max-w-6xl">
-          <div className="mb-14 text-center">
-            <h2 className="text-3xl font-bold text-foreground md:text-4xl">
+          <div className="mb-10 sm:mb-14 text-center">
+            <h2 className="text-2xl sm:text-3xl font-bold text-foreground md:text-4xl">
               为什么选择 Atoms Demo
             </h2>
             <p className="mt-3 text-muted-foreground">
@@ -121,7 +121,7 @@ const HomePage: React.FC = () => {
             </p>
           </div>
 
-          <div className="grid gap-6 md:grid-cols-3" data-ai-section-type="card-list">
+          <div className="grid gap-4 sm:gap-6 sm:grid-cols-2 md:grid-cols-3" data-ai-section-type="card-list">
             {features.map((feature, i) => {
               const Icon = feature.icon;
               return (
@@ -148,9 +148,9 @@ const HomePage: React.FC = () => {
       </section>
 
       {/* CTA */}
-      <section className="px-6 py-20">
-        <div className="mx-auto max-w-4xl rounded-2xl bg-gradient-to-br from-[hsl(262_83%_58%)] to-[hsl(280_83%_60%)] p-12 text-center text-white shadow-xl shadow-[hsl(262_83%_58%)]/20">
-          <h2 className="text-3xl font-bold md:text-4xl">
+      <section className="px-4 sm:px-6 py-16 sm:py-20">
+        <div className="mx-auto max-w-4xl rounded-2xl bg-gradient-to-br from-[hsl(262_83%_58%)] to-[hsl(280_83%_60%)] p-6 sm:p-12 text-center text-white shadow-xl shadow-[hsl(262_83%_58%)]/20">
+          <h2 className="text-2xl sm:text-3xl font-bold md:text-4xl">
             准备好构建你的下一个产品了吗？
           </h2>
           <p className="mx-auto mt-4 max-w-xl text-white/80">
@@ -168,7 +168,7 @@ const HomePage: React.FC = () => {
       </section>
 
       {/* Footer */}
-      <footer className="border-t border-border bg-background/50 px-6 py-8">
+      <footer className="border-t border-border bg-background/50 px-4 sm:px-6 py-8">
         <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-4 text-sm text-muted-foreground md:flex-row">
           <div className="flex items-center gap-2">
             <Sparkles className="size-4 text-[hsl(262_83%_58%)]" />

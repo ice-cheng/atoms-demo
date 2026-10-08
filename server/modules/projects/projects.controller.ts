@@ -25,6 +25,7 @@ import type {
   DashboardStats,
   AppStyle,
   ShareProjectResponse,
+  SharedProjectResponse,
 } from '@shared/api.interface';
 import {
   IsString,
@@ -544,6 +545,13 @@ data: ${JSON.stringify(project)}
     }
     const userId = await this.extractUserId(req);
     return this.projectsService.shareProject(id, userId);
+  }
+
+  @Get('share/:token')
+  async getSharedProject(
+    @Param('token') token: string,
+  ): Promise<SharedProjectResponse> {
+    return this.projectsService.getSharedProject(token);
   }
 
   @Post(':id/race/winner')

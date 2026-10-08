@@ -121,17 +121,17 @@ const DashboardHomePage: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-slate-50">
-      <div className="max-w-6xl mx-auto px-6 py-8">
-        {/* 欢迎语 */}
-        <div className="mb-8">
-          <h1 className="text-2xl font-bold text-slate-900 mb-1">
+      <div className="max-w-6xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
+         {/* 欢迎语 */}
+         <div className="mb-6 sm:mb-8">
+           <h1 className="text-xl sm:text-2xl font-bold text-slate-900 mb-1">
             欢迎回来，{user?.username || '用户'} 👋
           </h1>
           <p className="text-slate-500">今天想构建什么？</p>
         </div>
 
-        {/* 统计卡片 */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-10">
+         {/* 统计卡片 */}
+         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 mb-6 sm:mb-10">
           {loading ? (
             Array.from({ length: 4 }).map((_, i) => (
               <Skeleton key={i} className="h-24 rounded-xl" />
@@ -187,8 +187,8 @@ const DashboardHomePage: React.FC = () => {
         </div>
 
         {/* 我的项目 区域标题 */}
-        <div className="flex items-center justify-between mb-5">
-          <h2 className="text-lg font-bold text-slate-900">我的项目</h2>
+         <div className="flex items-center justify-between mb-4 sm:mb-5">
+           <h2 className="text-base sm:text-lg font-bold text-slate-900">我的项目</h2>
           <Link
             to="/dashboard/projects"
             className="inline-flex items-center gap-1 text-sm text-violet-600 hover:text-violet-700 font-medium transition-colors"
@@ -199,8 +199,8 @@ const DashboardHomePage: React.FC = () => {
         </div>
 
         {/* 项目列表 / 空状态 */}
-        {loading ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+         {loading ? (
+           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
             {Array.from({ length: 6 }).map((_, i) => (
               <Skeleton key={i} className="h-40 rounded-xl" />
             ))}
@@ -210,10 +210,7 @@ const DashboardHomePage: React.FC = () => {
         ) : projects.length === 0 ? (
           <EmptyProjects />
         ) : (
-          <div
-            className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"
-            data-ai-section-type="card-list"
-          >
+           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4" data-ai-section-type="card-list">
             {projects.map((project) => (
               <ProjectCard
                 key={project.id}

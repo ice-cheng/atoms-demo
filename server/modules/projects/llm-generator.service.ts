@@ -3,6 +3,8 @@ import axios from 'axios';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { AgentLogEntry, AppStyle, BrandKit } from '@shared/api.interface';
+import { async } from 'rxjs';
+import { string } from 'zod';
 
 const ARK_BASE_URL = 'https://ark.cn-beijing.volces.com/api/v3';
 const ARK_API_KEY = '7c391e92-86ac-4db5-9e53-e96fedc7a1c2';
@@ -10,7 +12,7 @@ const ARK_TEMPERATURE = 0.7;
 const ARK_MAX_TOKENS = 1500;
 const PM_MAX_TOKENS = 800;
 const ARCH_MAX_TOKENS = 1200;
-const ENGINEER_MAX_TOKENS = 16384;
+const ENGINEER_MAX_TOKENS = 131072;
 const REVIEW_MAX_TOKENS = 1000;
 
 const ARK_FIRST_BYTE_TIMEOUT = 300000;
@@ -24,9 +26,9 @@ const FIXER_PROMPT = (issues: string, existingCode: string, desc: string): strin
 ## 评审指出的问题
 ${issues}
 
-## 现有代码（前 4000 字符）
+## 现有完整代码
 \`\`\`html
-${existingCode.slice(0, 4000)}${existingCode.length > 4000 ? '\n... (代码过长，仅展示前4000字符)' : ''}
+${existingCode}
 \`\`\`
 
 请直接输出修复后的完整 HTML 代码（从 <!DOCTYPE html> 开始到 </html> 结束），用 \`\`\`html 代码块包裹。只修复指出的问题，保持其他部分不变。`;
@@ -36,9 +38,9 @@ const DEBUGGER_PROMPT = (errors: string, existingHtml: string): string => `你�
 ## 检测到的运行时错误
 ${errors}
 
-## 当前 HTML 代码
+## 当前完整 HTML 代码
 \`\`\`html
-${existingHtml.slice(0, 8000)}${existingHtml.length > 8000 ? '\n... (代码过长，仅展示前8000字符)' : ''}
+${existingHtml}
 \`\`\`
 
 请分析错误原因，并输出修复后的完整 HTML 代码（从 <!DOCTYPE html> 开始到 </html> 结束），用 \`\`\`html 代码块包裹。
@@ -94,8 +96,8 @@ function loadTemplate(key: string): string {
 }
 
 export interface StreamEvent {
-  type: 'agent_start' | 'log' | 'code_chunk' | 'agent_done' | 'done' | 'error' | 'fixer_start' | 'fixer_log' | 'fixer_done' | 'race_done' | 'thinking';
-  agent?: AgentLogEntry['agent'] | 'fixer';
+  type: 'agent_start' | 'log' | 'code_chunk' | 'agent_done' | 'done' | 'error' | 'fixer_start' | 'fixer_log' | 'fixer_done' | 'race_done' | 'thinking' | 'incomplete';
+  agent?: AgentLogEntry['agent'] | 'fixer' | 'system';
   agentName?: string;
   message?: string;
   code?: string;
@@ -108,6 +110,7 @@ export interface StreamEvent {
   round?: number;
   score?: number;
   fixIssues?: string[];
+  reason?: string;
 }
 
 interface ArkChatMessage {
@@ -128,6 +131,7 @@ interface AgentPhase {
   prompt: (desc: string, style: string, ctx: string, extra?: PhaseExtra) => string;
   isCodePhase: boolean;
   maxTokens: number;
+  disableThinking?: boolean;
 }
 
 const AGENT_PHASES: AgentPhase[] = [
@@ -233,10 +237,29 @@ ${extra?.templateHtml || ''}
 - 适当的动画和过渡效果
 - 响应式设计，适配桌面和移动端
 
-请直接输出完整的修改后 HTML 代码（从 <!DOCTYPE html> 开始到 </html> 结束），用 \`\`\`html 代码块包裹。代码前面可以有简短说明，但主体必须是完整可运行的 HTML。`;
+## 移动端适配强制要求（必须严格遵守）
+1. **必须包含 viewport meta**：<meta name="viewport" content="width=device-width, initial-scale=1.0">
+2. **响应式布局**：
+   - 移动端优先，小屏幕下单列布局，桌面端多列布局
+   - 容器 max-width 设为 100%，避免横向溢出
+   - flex 布局必须设置 flex-wrap: wrap，防止内容挤爆
+3. **字号与间距**：
+   - 字号优先使用 clamp() 或 rem/em 等相对单位
+   - 移动端 padding/margin 适当缩小
+4. **两档媒体查询**：
+   - @media (max-width: 768px)：平板/大屏手机适配
+   - @media (max-width: 480px)：小屏手机适配
+5. **禁止使用 body { overflow: hidden }**，这会导致小屏内容被裁剪；如需禁止横向滚动用 overflow-x: hidden
+6. **按钮/可点击区域最小 44px**，保证移动端触摸友好
+7. **图片 max-width: 100%**，防止超出视口
+
+请直接输出完整的修改后 HTML 代码（从 <!DOCTYPE html> 开始到 </html> 结束），用 \`\`\`html 代码块包裹。代码前面可以有简短说明，但主体必须是完整可运行的 HTML。
+
+**重要约束：所有 HTML 代码必须完整输出在正文内容中，绝对不能放在思考/推理过程里；思考过程只写分析思路，不得包含任何代码。**`;
     },
     isCodePhase: true,
     maxTokens: ENGINEER_MAX_TOKENS,
+    disableThinking: true,
   },
   {
     key: 'reviewer',
@@ -302,8 +325,13 @@ export class LlmGeneratorService implements OnModuleInit {
     let templateHtml = '';
     let finalScore = 0;
     let fixerRounds = 0;
+    let currentHtml = '';
+    let issuesText: string[] = [];
+    let doneSent = false;
+    let errorMessage = '';
 
-    for (let i = 0; i < AGENT_PHASES.length; i++) {
+    try {
+      for (let i = 0; i < AGENT_PHASES.length; i++) {
       const phase = AGENT_PHASES[i];
 
       // architect 阶段完成后，解析模板 key 并加载模板
@@ -334,6 +362,44 @@ export class LlmGeneratorService implements OnModuleInit {
         ? this.extractHtml(phaseResults['engineer'] || fullHtml)
         : this.buildContext(i, phaseResults, phaseExtra);
 
+      if (phase.key === 'reviewer') {
+        const reviewerCode = context;
+        const codeLen = reviewerCode.length;
+        const isComplete = this.isHtmlComplete(reviewerCode);
+        this.logger.log(
+          `[generateStream] Reviewer 输入校验: codeLen=${codeLen}, complete=${isComplete}`,
+        );
+        if (!isComplete || codeLen < 200) {
+          this.logger.error(
+            `[generateStream] Reviewer 输入代码为空或不完整，跳过Reviewer阶段 ` +
+            `(len=${codeLen}, complete=${isComplete})`,
+          );
+          yield {
+            type: 'agent_start',
+            agent: 'reviewer',
+            agentName: phase.name,
+            message: '审查员开始工作...',
+            timestamp: new Date().toISOString(),
+          };
+          yield {
+            type: 'log',
+            agent: 'reviewer',
+            agentName: phase.name,
+            message: '\u274c 收到的代码为空或不完整，无法进行有效评审。工程师可能未输出完整代码。',
+            timestamp: new Date().toISOString(),
+          };
+          phaseResults['reviewer'] = '代码不完整，无法评审。评分：3';
+          yield {
+            type: 'agent_done',
+            agent: 'reviewer',
+            agentName: phase.name,
+            message: '审查员工作完成',
+            timestamp: new Date().toISOString(),
+          };
+          continue;
+        }
+      }
+
       yield {
         type: 'agent_start',
         agent: phase.key,
@@ -352,21 +418,36 @@ export class LlmGeneratorService implements OnModuleInit {
         let phaseContent = '';
         let codeBuffer = '';
         let inCodeBlock = false;
+        let thinkingContent = '';
+        let hasAnyContent = false;
 
-        for await (const chunk of this.callArkStream(messages, phase.maxTokens)) {
+        for await (const chunk of this.callArkStream(messages, phase.maxTokens, phase.disableThinking)) {
           if (!chunk || !chunk.text) continue;
           const { type, text } = chunk;
 
           if (type === 'thinking') {
-            yield {
-              type: 'log',
-              agent: phase.key,
-              agentName: phase.name,
-              message: text,
-              timestamp: new Date().toISOString(),
-            };
+            if (phase.isCodePhase) {
+              thinkingContent += text;
+              yield {
+                type: 'thinking',
+                agent: phase.key,
+                agentName: phase.name,
+                message: text,
+                timestamp: new Date().toISOString(),
+              };
+            } else {
+              yield {
+                type: 'log',
+                agent: phase.key,
+                agentName: phase.name,
+                message: text,
+                timestamp: new Date().toISOString(),
+              };
+            }
             continue;
           }
+
+          if (!hasAnyContent && text.trim()) hasAnyContent = true;
 
           phaseContent += text;
 
@@ -458,7 +539,290 @@ export class LlmGeneratorService implements OnModuleInit {
           };
         }
 
+        if (phase.isCodePhase) {
+          const phaseExtract = this.robustExtractHtml(phaseContent);
+          const fullExtract = this.robustExtractHtml(fullHtml);
+          const phaseHtmlOk = phaseExtract.complete;
+          const fullHtmlOk = fullExtract.complete;
+
+          this.logger.log(
+            `[generateStream] ${phase.name} 阶段结束校验 ` +
+            `phaseContentLen=${phaseContent.length} ` +
+            `fullHtmlLen=${fullHtml.length} ` +
+            `thinkingLen=${thinkingContent.length} ` +
+            `phaseExtractComplete=${phaseExtract.complete} ` +
+            `fullExtractComplete=${fullExtract.complete} ` +
+            `phaseExtractReason=${phaseExtract.reason}`,
+          );
+
+          if (!fullHtmlOk && thinkingContent.trim()) {
+            this.logger.warn(
+              `[generateStream] ${phase.name} 输出不完整，尝试从thinking兜底提取 ` +
+              `(fullHtmlOk=${fullHtmlOk}, phaseHtmlOk=${phaseHtmlOk})`,
+            );
+            const thinkingExtract = this.robustExtractHtml(thinkingContent);
+            if (thinkingExtract.complete) {
+              phaseContent = thinkingContent;
+              fullHtml = thinkingExtract.html;
+              yield {
+                type: 'code_chunk',
+                agent: phase.key,
+                agentName: phase.name,
+                code: thinkingExtract.html,
+                fullHtml,
+                timestamp: new Date().toISOString(),
+              };
+              this.logger.log(
+                `[generateStream] ${phase.name} thinking兜底提取成功，长度=${thinkingExtract.html.length}`,
+              );
+            } else {
+              this.logger.warn(
+                `[generateStream] ${phase.name} thinking兜底也不完整 ` +
+                `(reason=${thinkingExtract.reason}, len=${thinkingExtract.html.length})`,
+              );
+            }
+          }
+        }
+
         phaseResults[phase.key] = phaseContent;
+
+        if (phase.key === 'engineer') {
+          const MAX_ENGINEER_RETRIES = 2;
+          let engineerRetries = 0;
+          let completionAttempted = false;
+
+          while (engineerRetries < MAX_ENGINEER_RETRIES) {
+            const extracted = this.robustExtractHtml(fullHtml || phaseContent);
+            if (extracted.complete) break;
+
+            const currentHtml = fullHtml || extracted.html || phaseContent;
+
+            if (!completionAttempted && this.isTailTruncated(currentHtml)) {
+              completionAttempted = true;
+              this.logger.warn(
+                `[generateStream] Engineer 检测到尾部截断，优先补全剩余代码 ` +
+                `(len=${currentHtml.length}, reason=${extracted.reason})`,
+              );
+              yield {
+                type: 'log',
+                agent: 'engineer',
+                agentName: phase.name,
+                message: '检测到输出尾部截断，正在补全剩余代码...',
+                timestamp: new Date().toISOString(),
+              };
+
+              const completer = this.completeTruncatedHtml(
+                currentHtml,
+                description,
+                phase.name,
+                'engineer',
+              );
+              let completionResult: { success: boolean; completedHtml: string } | undefined;
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              let step: any;
+              while (true) {
+                step = await completer.next(completionResult);
+                if (step.done) {
+                  completionResult = step.value as { success: boolean; completedHtml: string };
+                  break;
+                }
+                yield step.value as StreamEvent;
+              }
+
+              if (completionResult && completionResult.success) {
+                fullHtml = completionResult.completedHtml;
+                phaseContent = completionResult.completedHtml;
+                phaseResults['engineer'] = phaseContent;
+                this.logger.log(
+                  `[generateStream] Engineer 补全成功，最终长度=${completionResult.completedHtml.length}`,
+                );
+                continue;
+              }
+
+              this.logger.warn(
+                `[generateStream] Engineer 补全未完成，转为全量重新生成 ` +
+                `(success=${completionResult?.success})`,
+              );
+              yield {
+                type: 'log',
+                agent: 'engineer',
+                agentName: phase.name,
+                message: '补全未完成，转为全量重新生成...',
+                timestamp: new Date().toISOString(),
+              };
+            }
+
+            engineerRetries += 1;
+            this.logger.warn(
+              `[generateStream] Engineer 输出不完整，第${engineerRetries}次全量重试 ` +
+                `(reason=${extracted.reason}, len=${extracted.html.length}, ` +
+                `fullHtmlLen=${fullHtml.length})`,
+            );
+            yield {
+              type: 'log',
+              agent: 'engineer',
+              agentName: phase.name,
+              message: `\u26a0\ufe0f 代码输出不完整（${extracted.reason}），正在重新生成完整代码...（第${engineerRetries}次重试）`,
+              timestamp: new Date().toISOString(),
+            };
+
+            const retryPrompt = `你是一位前端开发工程师。请根据以下需求生成一个完整的、可直接运行的 HTML 网页应用。
+
+【用户需求】
+${description}
+
+【重要要求】
+1. 上次输出的代码不完整（${extracted.reason}），本次必须输出从 <!DOCTYPE html> 到 </html> 的完整代码
+2. 所有 HTML/CSS/JS 代码必须放在 \`\`\`html 代码块中，代码放在正文内容里，不要放在思考过程中
+3. 代码块必须有闭合的 \`\`\`，不要截断
+4. 代码必须完整包含：DOCTYPE、html、head、body、所有样式和脚本
+5. 确保 </body> 和 </html> 标签存在
+6. 输出语言：中文
+
+请直接输出完整的 HTML 代码，前面可以有一句话说明，但主体必须是完整可运行的 HTML 代码。`;
+
+            const retryMessages: ArkChatMessage[] = [
+              { role: 'system', content: '你是一个专业的前端开发工程师，擅长生成完整的HTML页面。' },
+              { role: 'user', content: retryPrompt },
+            ];
+
+            let retryContent = '';
+            let retryCodeBuffer = '';
+            let retryInCodeBlock = false;
+            let retryThinking = '';
+            let retryHasContent = false;
+            let retryFullHtml = '';
+
+            for await (const chunk of this.callArkStream(retryMessages, phase.maxTokens, phase.disableThinking)) {
+              if (!chunk || !chunk.text) continue;
+              const { type, text } = chunk;
+
+              if (type === 'thinking') {
+                retryThinking += text;
+                yield {
+                  type: 'thinking',
+                  agent: 'engineer',
+                  agentName: phase.name,
+                  message: text,
+                  timestamp: new Date().toISOString(),
+                };
+                continue;
+              }
+
+              if (!retryHasContent && text.trim()) retryHasContent = true;
+              retryContent += text;
+              retryCodeBuffer += text;
+
+              if (!retryInCodeBlock) {
+                const startIdx = retryCodeBuffer.indexOf('```html');
+                if (startIdx !== -1) {
+                  retryInCodeBlock = true;
+                  const beforeCode = retryCodeBuffer.slice(0, startIdx);
+                  if (beforeCode.trim()) {
+                    yield {
+                      type: 'log',
+                      agent: 'engineer',
+                      agentName: phase.name,
+                      message: beforeCode,
+                      timestamp: new Date().toISOString(),
+                    };
+                  }
+                  retryCodeBuffer = retryCodeBuffer.slice(startIdx + 7);
+                } else {
+                  yield {
+                    type: 'log',
+                    agent: 'engineer',
+                    agentName: phase.name,
+                    message: text,
+                    timestamp: new Date().toISOString(),
+                  };
+                }
+              }
+
+              if (retryInCodeBlock) {
+                const endIdx = retryCodeBuffer.indexOf('```');
+                if (endIdx !== -1 && endIdx > 0) {
+                  const codePart = retryCodeBuffer.slice(0, endIdx);
+                  retryFullHtml += codePart;
+                  yield {
+                    type: 'code_chunk',
+                    agent: 'engineer',
+                    agentName: phase.name,
+                    code: codePart,
+                    fullHtml: retryFullHtml,
+                    timestamp: new Date().toISOString(),
+                  };
+                  retryCodeBuffer = retryCodeBuffer.slice(endIdx + 3);
+                  retryInCodeBlock = false;
+                } else {
+                  const flushPoint = Math.floor(retryCodeBuffer.length * 0.8);
+                  if (flushPoint > 50) {
+                    const toFlush = retryCodeBuffer.slice(0, flushPoint);
+                    retryFullHtml += toFlush;
+                    yield {
+                      type: 'code_chunk',
+                      agent: 'engineer',
+                      agentName: phase.name,
+                      code: toFlush,
+                      fullHtml: retryFullHtml,
+                      timestamp: new Date().toISOString(),
+                    };
+                    retryCodeBuffer = retryCodeBuffer.slice(flushPoint);
+                  }
+                }
+              }
+            }
+
+            if (retryInCodeBlock && retryCodeBuffer.length > 0) {
+              const endIdx = retryCodeBuffer.indexOf('```');
+              const remaining = endIdx !== -1
+                ? retryCodeBuffer.slice(0, endIdx)
+                : retryCodeBuffer;
+              retryFullHtml += remaining;
+              yield {
+                type: 'code_chunk',
+                agent: 'engineer',
+                agentName: phase.name,
+                code: remaining,
+                fullHtml: retryFullHtml,
+                timestamp: new Date().toISOString(),
+              };
+            }
+
+            const retryExtract = this.robustExtractHtml(retryFullHtml || retryContent);
+            if (!retryExtract.complete && retryThinking.trim()) {
+              this.logger.warn(
+                `[generateStream] Engineer 第${engineerRetries}次重试正文仍不完整，尝试thinking兜底`,
+              );
+              const thinkingRetry = this.robustExtractHtml(retryThinking);
+              if (thinkingRetry.complete) {
+                retryFullHtml = thinkingRetry.html;
+                retryContent = retryThinking;
+                this.logger.log(
+                  `[generateStream] Engineer 第${engineerRetries}次重试thinking兜底成功，长度=${thinkingRetry.html.length}`,
+                );
+              }
+            }
+
+            const finalRetryExtract = this.robustExtractHtml(retryFullHtml || retryContent);
+            if (finalRetryExtract.complete) {
+              phaseContent = retryContent;
+              fullHtml = finalRetryExtract.html;
+              phaseResults['engineer'] = phaseContent;
+              this.logger.log(
+                `[generateStream] Engineer 第${engineerRetries}次重试成功，html长度=${finalRetryExtract.html.length}`,
+              );
+              break;
+            } else {
+              this.logger.warn(
+                `[generateStream] Engineer 第${engineerRetries}次重试仍不完整（reason=${finalRetryExtract.reason}）`,
+              );
+              phaseContent = retryContent;
+              fullHtml = finalRetryExtract.html;
+              phaseResults['engineer'] = phaseContent;
+            }
+          }
+        }
 
         yield {
           type: 'agent_done',
@@ -486,8 +850,8 @@ export class LlmGeneratorService implements OnModuleInit {
 
     finalScore = this.parseScore(phaseResults['reviewer'] || '');
 
-    let currentHtml = finalHtml;
-    const issuesText = this.extractIssues(phaseResults['reviewer'] || '');
+    currentHtml = finalHtml;
+    issuesText = this.extractIssues(phaseResults['reviewer'] || '');
     let currentIssuesText = issuesText.join('\n');
 
     const htmlComplete = this.isHtmlComplete(finalHtml);
@@ -525,22 +889,29 @@ export class LlmGeneratorService implements OnModuleInit {
           let fixerCodeBuffer = '';
           let fixerInCodeBlock = false;
           let fixerFullHtml = '';
+          let fixerThinking = '';
+          let fixerHasContent = false;
 
-          for await (const chunk of this.callArkStream(fixerMessages, ENGINEER_MAX_TOKENS)) {
+          for await (const chunk of this.callArkStream(fixerMessages, ENGINEER_MAX_TOKENS, true)) {
             if (!chunk || !chunk.text) continue;
             const { type, text } = chunk;
 
             if (type === 'thinking') {
-              yield {
-                type: 'fixer_log',
-                agent: 'fixer',
-                agentName: 'Fixer Agent',
-                message: text,
-                round,
-                timestamp: new Date().toISOString(),
-              };
+              fixerThinking += text;
+              if (fixerHasContent) {
+                yield {
+                  type: 'fixer_log',
+                  agent: 'fixer',
+                  agentName: 'Fixer Agent',
+                  message: text,
+                  round,
+                  timestamp: new Date().toISOString(),
+                };
+              }
               continue;
             }
+
+            if (!fixerHasContent && text.trim()) fixerHasContent = true;
 
             fixerContent += text;
 
@@ -626,7 +997,17 @@ export class LlmGeneratorService implements OnModuleInit {
             };
           }
 
-          const fixedHtml = this.extractHtml(fixerContent || fixerFullHtml);
+          let fixedHtml = this.extractHtml(fixerContent || fixerFullHtml);
+          if (!fixedHtml && !fixerContent.trim() && fixerThinking.trim()) {
+            const thinkingExtract = this.robustExtractHtml(fixerThinking);
+            if (thinkingExtract.html) {
+              fixedHtml = thinkingExtract.html;
+              fixerFullHtml = thinkingExtract.html;
+              this.logger.log(
+                `[generateStream] Fixer 第${round}轮thinking兜底提取成功，长度=${fixedHtml.length}`,
+              );
+            }
+          }
           currentHtml = fixedHtml || currentHtml;
 
           yield {
@@ -697,6 +1078,7 @@ export class LlmGeneratorService implements OnModuleInit {
       }
     }
 
+    doneSent = true;
     yield {
       type: 'done',
       fullHtml: currentHtml,
@@ -704,7 +1086,31 @@ export class LlmGeneratorService implements OnModuleInit {
       fixIssues: issuesText,
       timestamp: new Date().toISOString(),
     };
+  } catch (error) {
+    errorMessage = error instanceof Error ? error.message : '未知错误';
+    this.logger.error('[generateStream] 生成流程异常', error);
+    yield {
+      type: 'error',
+      agent: 'system',
+      agentName: 'System',
+      error: errorMessage,
+      timestamp: new Date().toISOString(),
+    };
+  } finally {
+    if (!doneSent) {
+      this.logger.warn(
+        `[generateStream] 流程异常终止，补发 done 事件（hasError=${!!errorMessage}）`,
+      );
+      yield {
+        type: 'done',
+        fullHtml: currentHtml || fullHtml,
+        score: finalScore,
+        fixIssues: issuesText,
+        timestamp: new Date().toISOString(),
+      };
+    }
   }
+}
 
   private parseScore(reviewText: string): number {
     const match = reviewText.match(/评分[：: ]*\s*(\d+)/);
@@ -748,7 +1154,7 @@ export class LlmGeneratorService implements OnModuleInit {
     modifyInstruction?: string,
   ): AsyncGenerator<StreamEvent> {
     const instruction = modifyInstruction?.trim() || description;
-    const rebuildPrompt = `你是一位资深前端工程师。你的任务是严格按照用户的修改指令，对现有的 HTML 网页进行精准修改。
+    const rebuildPrompt = `你是一位资深前端工程师。你的任务是严格按照用户的修改指令，对现有的完整 HTML 网页进行精准的增量修改。
 
 【用户修改指令】
 ${modifyInstruction || description}
@@ -756,16 +1162,24 @@ ${modifyInstruction || description}
 【设计风格】
 ${style}
 
- 【现有 HTML 代码】
+【现有完整 HTML 代码】
 \`\`\`html
-${existingHtml.slice(0, 5000)}${existingHtml.length > 5000 ? '\n... (代码过长，仅展示前5000字符)' : ''}
+${existingHtml}
 \`\`\`
 
-【核心要求 — 必须严格遵守】
-1. **只改用户明确要求修改的部分**，其余所有代码、功能、结构、样式必须完整保留，不得擅自重构、删减或添加未被要求的内容。
-2. **必须确保用户的修改指令在最终代码中完全生效**。例如要求改标题则 <title> 和页面主标题必须同时更新；要求改颜色则按钮/主题色必须出现对应颜色值。
-3. 输出完整的、可直接运行的 HTML 文件，所有 CSS 和 JavaScript 都内联在 HTML 中。
-4. 保持整体结构和风格的一致性，确保修改后的代码功能完整、可直接运行。
+【重要声明 — 必须严格遵守】
+1. **以上代码是完整可用的**，包含从 <!DOCTYPE html> 到 </html> 的全部内容，不存在任何截断、缺失或不完整。请不要声称代码不完整，也不要去"补全"任何未被要求修改的部分。
+2. **只改用户明确要求修改的部分**，其余所有代码、功能、结构、样式必须完整保留，不得擅自重构、删减或添加未被要求的内容。
+3. **必须确保用户的修改指令在最终代码中完全生效**。例如要求改标题则 <title> 和页面主标题必须同时更新；要求改颜色则按钮/主题色必须出现对应颜色值。
+4. 输出完整的、可直接运行的 HTML 文件，所有 CSS 和 JavaScript 都内联在 HTML 中。
+5. 保持整体结构和风格的一致性，确保修改后的代码功能完整、可直接运行。
+6. 输出的代码必须包含完整的 <!DOCTYPE html> 开头和 </html> 结尾，禁止中途截断。
+7. **移动端适配强制要求**：
+   - 必须有 viewport meta 标签
+   - 必须包含 @media (max-width: 768px) 和 @media (max-width: 480px) 两档响应式样式
+   - 禁止 body { overflow: hidden }，如需禁止横向滚动用 overflow-x: hidden
+   - flex 布局设置 flex-wrap: wrap
+   - 按钮/可点击区域高度 ≥ 44px
 
 请直接输出完整的修改后的 HTML 代码（从 <!DOCTYPE html> 开始到 </html> 结束），用 \`\`\`html 代码块包裹。**不要输出任何额外的解释文字，只输出代码块。**`;
 
@@ -783,11 +1197,20 @@ ${existingHtml.slice(0, 5000)}${existingHtml.length > 5000 ? '\n... (代码过�
           role: 'system',
           content:
             '你是一个严谨的前端工程师。规则：\n'
-            + '1. 严格按照用户的修改指令修改现有 HTML，用户要求改什么就改什么，不要自作主张。\n'
-            + '2. 用户要求改标题时，必须同时更新 <title> 标签和页面内主标题。\n'
-            + '3. 用户要求改颜色时，必须在 CSS 中使用指定颜色值。\n'
-            + '4. 没有被要求修改的部分，原样保留，不要重构、不要重写。\n'
-            + '5. 只输出 ```html 代码块，不要输出任何解释文字。',
+            + '1. 提供给你的现有 HTML 代码是完整可用的，不存在截断或缺失。\n'
+            + '2. 严格按照用户的修改指令修改现有 HTML，用户要求改什么就改什么，不要自作主张。\n'
+            + '3. 用户要求改标题时，必须同时更新 <title> 标签和页面内主标题。\n'
+            + '4. 用户要求改颜色时，必须使用合法的 CSS 颜色值（如 #ff0000、rgb(255,0,0)、red 等），绝对禁止写中文颜色名称或短语作为属性值。\n'
+            + '5. 用户要求改背景色时，必须修改 body 的 background 或 background-color 属性，值必须是合法 CSS 颜色。\n'
+            + '6. 没有被要求修改的部分，原样保留，不要重构、不要重写、不要补全。\n'
+            + '7. 输出完整 HTML（<!DOCTYPE html> 到 </html>），必须包含 </html> 闭合标签。\n'
+            + '8. 只输出 ```html 代码块，不要输出任何解释文字。\n'
+            + '9. **移动端适配强制要求**：\n'
+            + '   - 必须有 viewport meta 标签\n'
+            + '   - 必须包含 @media (max-width: 768px) 和 @media (max-width: 480px) 两档响应式样式\n'
+            + '   - 禁止 body { overflow: hidden }，如需禁止横向滚动用 overflow-x: hidden\n'
+            + '   - flex 布局设置 flex-wrap: wrap\n'
+            + '   - 按钮最小高度 44px，确保移动端触摸友好',
         },
         { role: 'user', content: rebuildPrompt },
       ];
@@ -796,20 +1219,27 @@ ${existingHtml.slice(0, 5000)}${existingHtml.length > 5000 ? '\n... (代码过�
       let codeBuffer = '';
       let inCodeBlock = false;
       let phaseContent = '';
+      let thinkingContent = '';
+      let hasAnyContent = false;
 
-      for await (const chunk of this.callArkStream(messages, ENGINEER_MAX_TOKENS)) {
+      for await (const chunk of this.callArkStream(messages, ENGINEER_MAX_TOKENS, true)) {
         if (!chunk || !chunk.text) continue;
         const { type, text } = chunk;
 
         if (type === 'thinking') {
+          thinkingContent += text;
           yield {
-            type: 'log',
+            type: 'thinking',
             agent: 'engineer',
             agentName: 'Engineer',
             message: text,
             timestamp: new Date().toISOString(),
           };
           continue;
+        }
+
+        if (!hasAnyContent && text.trim()) {
+          hasAnyContent = true;
         }
 
         phaseContent += text;
@@ -897,21 +1327,207 @@ ${existingHtml.slice(0, 5000)}${existingHtml.length > 5000 ? '\n... (代码过�
         };
       }
 
-      yield {
-        type: 'agent_done',
-        agent: 'engineer',
-        agentName: 'Engineer',
-        message: '代码修改完成',
-        timestamp: new Date().toISOString(),
-      };
+      const extractResult = this.robustExtractHtml(phaseContent || fullHtml);
+      let finalHtml = extractResult.html;
+      let isHtmlComplete = extractResult.complete;
+      let failureReason = extractResult.reason;
 
-      const finalHtml = this.extractHtml(phaseContent || fullHtml);
+      if (!isHtmlComplete && !phaseContent.trim() && thinkingContent.trim()) {
+        const thinkingResult = this.robustExtractHtml(thinkingContent);
+        if (thinkingResult.complete) {
+          finalHtml = thinkingResult.html;
+          isHtmlComplete = true;
+          failureReason = 'ok';
+          fullHtml = finalHtml;
+          this.logger.log(
+            `[rebuildStream] reasoning兜底提取成功（模型把代码输出到reasoning中），长度=${finalHtml.length}`,
+          );
+          yield {
+            type: 'code_chunk',
+            agent: 'engineer',
+            agentName: 'Engineer',
+            code: finalHtml,
+            fullHtml: finalHtml,
+            timestamp: new Date().toISOString(),
+          };
+        } else if (thinkingResult.html) {
+          finalHtml = thinkingResult.html;
+          failureReason = thinkingResult.reason;
+          fullHtml = finalHtml;
+          this.logger.warn(
+            `[rebuildStream] reasoning兜底也不完整（reason=${thinkingResult.reason}）`,
+          );
+        }
+      }
 
-      yield {
-        type: 'done',
-        fullHtml: finalHtml,
-        timestamp: new Date().toISOString(),
-      };
+      if (!isHtmlComplete && !phaseContent.trim() && fullHtml.trim()) {
+        const fallbackResult = this.robustExtractHtml(fullHtml);
+        if (fallbackResult.complete) {
+          finalHtml = fallbackResult.html;
+          isHtmlComplete = true;
+          failureReason = 'ok';
+          this.logger.log(
+            `[rebuildStream] fullHtml兜底提取成功（phaseContent为空但fullHtml完整）`,
+          );
+        }
+      }
+
+      if (!isHtmlComplete) {
+        const currentHtml = finalHtml || fullHtml || phaseContent;
+
+        if (this.isTailTruncated(currentHtml)) {
+          this.logger.warn(
+            `[rebuildStream] 检测到尾部截断，优先补全剩余代码(len=${currentHtml.length})`,
+          );
+          yield {
+            type: 'log',
+            agent: 'engineer',
+            agentName: 'Engineer',
+            message: '检测到输出尾部截断，正在补全剩余代码...',
+            timestamp: new Date().toISOString(),
+          };
+
+          const completer = this.completeTruncatedHtml(
+            currentHtml,
+            instruction,
+            'Engineer',
+            'engineer',
+          );
+          let completionResult: { success: boolean; completedHtml: string } | undefined;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          let step: any;
+          while (true) {
+            step = await completer.next(completionResult);
+            if (step.done) {
+              completionResult = step.value as { success: boolean; completedHtml: string };
+              break;
+            }
+            yield step.value as StreamEvent;
+          }
+
+          if (completionResult && completionResult.success) {
+            finalHtml = completionResult.completedHtml;
+            fullHtml = finalHtml;
+            isHtmlComplete = true;
+            phaseContent = finalHtml;
+            this.logger.log(
+              `[rebuildStream] 补全成功，finalHtml长度=${finalHtml.length}`,
+            );
+          } else {
+            this.logger.warn(
+              `[rebuildStream] 补全未完成，转为全量重新生成`,
+            );
+            yield {
+              type: 'log',
+              agent: 'engineer',
+              agentName: 'Engineer',
+              message: '补全未完成，转为全量重新生成...',
+              timestamp: new Date().toISOString(),
+            };
+          }
+        }
+
+        if (!isHtmlComplete) {
+          this.logger.warn(
+            `[rebuildStream] 首次输出不完整（reason=${extractResult.reason}），触发全量重试`,
+          );
+          yield {
+            type: 'log',
+            agent: 'engineer',
+            agentName: 'Engineer',
+            message: '检测到输出不完整，正在重新生成完整代码...',
+            timestamp: new Date().toISOString(),
+          };
+
+          const partialContent = phaseContent || fullHtml;
+          const retryPrompt = `上次输出不完整，缺少 </html> 闭合标签（可能被截断）。请重新输出**完整的** HTML 文档，严格满足以下要求：
+
+1. 必须从 <!DOCTYPE html> 开始，以 </html> 结束，中间不得截断
+2. 保留所有已实现的修改效果和完整的页面结构
+3. 使用 \`\`\`html 代码块包裹，但代码块内必须是完整闭合的 HTML
+4. 不要输出任何额外的解释文字，只输出完整代码块
+5. 确保所有标签正确闭合，特别是 </body> 和 </html>
+
+【原始修改指令】
+${instruction}
+
+【上次不完整的输出（供参考，请在此基础上补全并重写完整版本）】
+${partialContent.slice(-3000)}`;
+
+          const retryMessages: ArkChatMessage[] = [
+            {
+              role: 'system',
+              content: '你是一个严谨的前端工程师。请输出完整闭合的 HTML 文档，从 <!DOCTYPE html> 到 </html>，绝不允许截断。',
+            },
+            { role: 'user', content: retryPrompt },
+          ];
+
+          let retryContent = '';
+          try {
+            for await (const retryChunk of this.callArkStream(retryMessages, ENGINEER_MAX_TOKENS, true)) {
+              if (!retryChunk || !retryChunk.text) continue;
+              if (retryChunk.type === 'thinking') continue;
+              retryContent += retryChunk.text;
+            }
+          } catch (retryErr) {
+            this.logger.error('[rebuildStream] 全量重试失败', retryErr);
+          }
+
+          if (retryContent) {
+            const retryResult = this.robustExtractHtml(retryContent);
+            if (retryResult.complete) {
+              finalHtml = retryResult.html;
+              isHtmlComplete = true;
+              fullHtml = finalHtml;
+              yield {
+                type: 'code_chunk',
+                agent: 'engineer',
+                agentName: 'Engineer',
+                code: finalHtml,
+                fullHtml: finalHtml,
+                timestamp: new Date().toISOString(),
+              };
+              this.logger.log(
+                `[rebuildStream] 全量重试成功，finalHtml长度=${finalHtml.length}`,
+              );
+            } else {
+              this.logger.warn(
+                `[rebuildStream] 全量重试仍不完整（reason=${retryResult.reason}）`,
+              );
+            }
+          }
+        }
+      }
+
+      if (isHtmlComplete) {
+        yield {
+          type: 'agent_done',
+          agent: 'engineer',
+          agentName: 'Engineer',
+          message: '代码修改完成',
+          fullHtml: finalHtml,
+          timestamp: new Date().toISOString(),
+        };
+      } else {
+        this.logger.warn(
+          `[rebuildStream] Engineer输出不完整，finalHtml长度=${finalHtml.length}，phaseContent长度=${phaseContent.length}`,
+        );
+        yield {
+          type: 'agent_done',
+          agent: 'engineer',
+          agentName: 'Engineer',
+          message: '代码输出未完整闭合，进入修复流程',
+          fullHtml: finalHtml,
+          timestamp: new Date().toISOString(),
+        };
+
+        yield {
+          type: 'incomplete',
+          fullHtml: finalHtml,
+          reason: failureReason || 'unknown',
+          timestamp: new Date().toISOString(),
+        };
+      }
     } catch (error) {
       this.logger.error('迭代修改失败', error);
       yield {
@@ -947,9 +1563,27 @@ ${existingHtml.slice(0, 5000)}${existingHtml.length > 5000 ? '\n... (代码过�
       let codeBuffer = '';
       let inCodeBlock = false;
       let phaseContent = '';
+      let thinkingContent = '';
+      let hasAnyContent = false;
 
-      for await (const text of this.callArkStream(messages, ENGINEER_MAX_TOKENS)) {
+      for await (const chunk of this.callArkStream(messages, ENGINEER_MAX_TOKENS, true)) {
+        if (!chunk) continue;
+        const { type, text } = chunk as { type: string; text: string };
         if (!text) continue;
+
+        if (type === 'thinking') {
+          thinkingContent += text;
+          yield {
+            type: 'thinking',
+            agent: 'engineer',
+            agentName: 'Debugger Agent',
+            message: text,
+            timestamp: new Date().toISOString(),
+          };
+          continue;
+        }
+
+        if (!hasAnyContent && text.trim()) hasAnyContent = true;
 
         phaseContent += text;
         codeBuffer += text;
@@ -1021,7 +1655,146 @@ ${existingHtml.slice(0, 5000)}${existingHtml.length > 5000 ? '\n... (代码过�
         timestamp: new Date().toISOString(),
       };
 
-      const finalHtml = this.extractHtml(phaseContent || fullHtml);
+      let debugExtractResult = this.robustExtractHtml(phaseContent || fullHtml);
+      let finalHtml = debugExtractResult.html;
+
+      if (!debugExtractResult.complete && !phaseContent.trim() && thinkingContent.trim()) {
+        const thinkingResult = this.robustExtractHtml(thinkingContent);
+        if (thinkingResult.complete && thinkingResult.html) {
+          debugExtractResult = thinkingResult;
+          finalHtml = thinkingResult.html;
+          fullHtml = finalHtml;
+          yield {
+            type: 'code_chunk',
+            agent: 'engineer',
+            agentName: 'Debugger Agent',
+            code: finalHtml,
+            fullHtml,
+            timestamp: new Date().toISOString(),
+          };
+          this.logger.log(
+            `[debugFixStream] reasoning兜底提取成功，长度=${finalHtml.length}`,
+          );
+        }
+      }
+
+      if (!debugExtractResult.complete) {
+        const currentHtml = finalHtml || fullHtml || phaseContent;
+
+        if (this.isTailTruncated(currentHtml)) {
+          this.logger.warn(
+            `[debugFixStream] 检测到尾部截断，优先补全剩余代码(len=${currentHtml.length})`,
+          );
+          yield {
+            type: 'log',
+            agent: 'engineer',
+            agentName: 'Debugger Agent',
+            message: '检测到输出尾部截断，正在补全剩余代码...',
+            timestamp: new Date().toISOString(),
+          };
+
+          const completer = this.completeTruncatedHtml(
+            currentHtml,
+            `修复以下错误：${errors}`,
+            'Debugger Agent',
+            'engineer',
+          );
+          let completionResult: { success: boolean; completedHtml: string } | undefined;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          let step: any;
+          while (true) {
+            step = await completer.next(completionResult);
+            if (step.done) {
+              completionResult = step.value as { success: boolean; completedHtml: string };
+              break;
+            }
+            yield step.value as StreamEvent;
+          }
+
+          if (completionResult && completionResult.success) {
+            finalHtml = completionResult.completedHtml;
+            fullHtml = finalHtml;
+            debugExtractResult = { html: finalHtml, complete: true, reason: 'completed_by_completion' };
+            this.logger.log(
+              `[debugFixStream] 补全成功，finalHtml长度=${finalHtml.length}`,
+            );
+          } else {
+            this.logger.warn('[debugFixStream] 补全未完成，转为全量重新生成');
+            yield {
+              type: 'log',
+              agent: 'engineer',
+              agentName: 'Debugger Agent',
+              message: '补全未完成，转为全量重新生成...',
+              timestamp: new Date().toISOString(),
+            };
+          }
+        }
+
+        if (!debugExtractResult.complete) {
+          this.logger.warn(
+            `[debugFixStream] 首次输出不完整（reason=${debugExtractResult.reason}），触发全量重试`,
+          );
+          yield {
+            type: 'log',
+            agent: 'engineer',
+            agentName: 'Debugger Agent',
+            message: '检测到输出不完整，正在重新生成完整修复代码...',
+            timestamp: new Date().toISOString(),
+          };
+
+          const retryPrompt = `上次输出的修复代码不完整，缺少 </html> 闭合标签。请重新输出**完整的**修复后 HTML 文档：
+
+1. 必须从 <!DOCTYPE html> 开始，以 </html> 结束，中间不得截断
+2. 保留所有错误修复效果和完整页面结构
+3. 使用 \`\`\`html 代码块包裹，但代码块内必须是完整闭合的 HTML
+4. 不要输出任何额外的解释文字，只输出完整代码块
+5. 确保所有标签正确闭合，特别是 </body> 和 </html>
+
+【原始错误信息】
+${errors}
+
+【上次不完整的输出（最后3000字，供参考）】
+${(phaseContent || fullHtml).slice(-3000)}`;
+
+          const retryMessages: ArkChatMessage[] = [
+            {
+              role: 'system',
+              content: '你是一个专业的前端调试工程师。请输出完整闭合的 HTML 文档，从 <!DOCTYPE html> 到 </html>，绝不允许截断。',
+            },
+            { role: 'user', content: retryPrompt },
+          ];
+
+          let retryContent = '';
+          try {
+            for await (const retryChunk of this.callArkStream(retryMessages, ENGINEER_MAX_TOKENS, true)) {
+              if (!retryChunk || !retryChunk.text) continue;
+              if (retryChunk.type === 'thinking') continue;
+              retryContent += retryChunk.text;
+            }
+          } catch (retryErr) {
+            this.logger.error('[debugFixStream] 全量重试失败', retryErr);
+          }
+
+          if (retryContent) {
+            const retryResult = this.robustExtractHtml(retryContent);
+            if (retryResult.complete) {
+              finalHtml = retryResult.html;
+              fullHtml = finalHtml;
+              yield {
+                type: 'code_chunk',
+                agent: 'engineer',
+                agentName: 'Debugger Agent',
+                code: finalHtml,
+                fullHtml: finalHtml,
+                timestamp: new Date().toISOString(),
+              };
+              this.logger.log(
+                `[debugFixStream] 全量重试成功，finalHtml长度=${finalHtml.length}`,
+              );
+            }
+          }
+        }
+      }
 
       yield {
         type: 'done',
@@ -1115,6 +1888,7 @@ ${existingHtml.slice(0, 5000)}${existingHtml.length > 5000 ? '\n... (代码过�
     model: string,
     messages: ArkChatMessage[],
     maxTokens?: number,
+    disableThinking = false,
   ): AsyncGenerator<{ type: 'content' | 'thinking'; text: string }> {
     if (!ARK_API_KEY) {
       this.logger.warn('ARK_API_KEY 未设置，LLM 调用将失败');
@@ -1123,15 +1897,20 @@ ${existingHtml.slice(0, 5000)}${existingHtml.length > 5000 ? '\n... (代码过�
 
     const url = `${ARK_BASE_URL}/chat/completions`;
 
-    const response = await axios.post(
-      url,
-      {
+      const body: Record<string, unknown> = {
         model,
         messages,
         temperature: ARK_TEMPERATURE,
         max_tokens: maxTokens ?? ARK_MAX_TOKENS,
         stream: true,
-      },
+      };
+      if (disableThinking) {
+        body.thinking = { type: 'disabled' };
+      }
+
+      const response = await axios.post(
+        url,
+        body,
       {
         headers: {
           'Content-Type': 'application/json',
@@ -1271,6 +2050,7 @@ ${existingHtml.slice(0, 5000)}${existingHtml.length > 5000 ? '\n... (代码过�
   private async *callArkStream(
     messages: ArkChatMessage[],
     maxTokens?: number,
+    disableThinking = false,
   ): AsyncGenerator<{ type: 'content' | 'thinking'; text: string }> {
     const models: string[] = (this as any)._modelOverride ?? getModelList();
     const errors: string[] = [];
@@ -1279,7 +2059,7 @@ ${existingHtml.slice(0, 5000)}${existingHtml.length > 5000 ? '\n... (代码过�
       const model = models[i];
       try {
         this.logger.log(`[LLM] 使用模型 ${model} 开始调用`);
-        const generator = this.callArkStreamWithModel(model, messages, maxTokens);
+        const generator = this.callArkStreamWithModel(model, messages, maxTokens, disableThinking);
         let hasYieldedContent = false;
         let hasReceivedAny = false;
         let lastReceiveTime = Date.now();
@@ -1402,6 +2182,128 @@ ${existingHtml.slice(0, 5000)}${existingHtml.length > 5000 ? '\n... (代码过�
     return parts.join('\n\n');
   }
 
+  private isTailTruncated(html: string): boolean {
+    if (!html || html.length <= 8000) return false;
+    const lower = html.toLowerCase();
+    const hasStart = lower.includes('<!doctype html') || /<html[\s>]/i.test(lower);
+    if (!hasStart) return false;
+    const hasClose = lower.includes('</html>');
+    if (hasClose) return false;
+    return true;
+  }
+
+  private async *completeTruncatedHtml(
+    truncatedHtml: string,
+    description: string,
+    agentName: string,
+    agentKey: string,
+  ): AsyncGenerator<StreamEvent, { success: boolean; completedHtml: string }, unknown> {
+    const tailContext = truncatedHtml.slice(-2000);
+    const completePrompt = `以下是正在生成的 HTML 代码，输出在中途被截断，缺少尾部闭合。请**从截断处继续**输出剩余部分，使其完整闭合到 \`</html>\`。
+
+【重要要求】
+1. **不要重复已输出的内容**，从上次的截断位置继续往下写
+2. 不要重新分析需求，不要加解释文字，不要输出 \`\`\`html 开头
+3. 直接继续输出代码，直到 </body></html> 完整闭合
+4. 闭合后输出 \`\`\` 结束代码块
+5. 确保所有已打开的标签正确闭合
+
+【用户需求背景】
+${description}
+
+【已生成代码的最后 2000 字符（从这里继续）】
+${tailContext}
+
+请直接继续输出剩余代码：`;
+
+    const messages: ArkChatMessage[] = [
+      { role: 'system', content: '你是一位专业的前端补全工程师。你的任务是从截断处继续输出剩余的HTML代码，只输出后续部分，不要重复已有内容，不要解释。' },
+      { role: 'user', content: completePrompt },
+    ];
+
+    let completionContent = '';
+    let codeBuffer = '';
+    let started = false;
+
+    for await (const chunk of this.callArkStream(messages, ENGINEER_MAX_TOKENS, true)) {
+      if (!chunk || !chunk.text) continue;
+      if (chunk.type === 'thinking') continue;
+
+      const text = chunk.text;
+      completionContent += text;
+      codeBuffer += text;
+
+      if (!started) {
+        const fenceIdx = codeBuffer.indexOf('```html');
+        if (fenceIdx !== -1) {
+          started = true;
+          codeBuffer = codeBuffer.slice(fenceIdx + 7);
+        } else {
+          const newlineIdx = codeBuffer.indexOf('\n');
+          if (newlineIdx !== -1 && newlineIdx < 100) {
+            const firstLine = codeBuffer.slice(0, newlineIdx).trim();
+            if (!firstLine.startsWith('<') && firstLine.length < 80) {
+              const skipIdx = codeBuffer.indexOf('\n') + 1;
+              if (codeBuffer.slice(skipIdx).trim().startsWith('<') || codeBuffer.slice(skipIdx).trim().startsWith('```')) {
+                started = true;
+                codeBuffer = codeBuffer.slice(skipIdx);
+                if (codeBuffer.startsWith('```html')) {
+                  codeBuffer = codeBuffer.slice(7);
+                }
+              }
+            }
+          }
+        }
+      }
+
+      if (started) {
+        const endIdx = codeBuffer.indexOf('```');
+        let toEmit = '';
+        if (endIdx !== -1) {
+          toEmit = codeBuffer.slice(0, endIdx);
+          codeBuffer = codeBuffer.slice(endIdx + 3);
+        } else {
+          const flushPoint = Math.floor(codeBuffer.length * 0.7);
+          if (flushPoint > 50) {
+            toEmit = codeBuffer.slice(0, flushPoint);
+            codeBuffer = codeBuffer.slice(flushPoint);
+          }
+        }
+        if (toEmit) {
+          yield {
+            type: 'code_chunk',
+            agent: agentKey as AgentLogEntry['agent'] | 'fixer',
+            agentName,
+            code: toEmit,
+            fullHtml: truncatedHtml + completionContent,
+            timestamp: new Date().toISOString(),
+          };
+        }
+      }
+    }
+
+    if (started && codeBuffer.length > 0) {
+      const endIdx = codeBuffer.indexOf('```');
+      const remaining = endIdx !== -1 ? codeBuffer.slice(0, endIdx) : codeBuffer;
+      if (remaining.trim()) {
+        yield {
+          type: 'code_chunk',
+            agent: agentKey as AgentLogEntry['agent'] | 'fixer',
+            agentName,
+            code: remaining,
+          fullHtml: truncatedHtml + completionContent,
+          timestamp: new Date().toISOString(),
+        };
+      }
+    }
+
+    const combined = truncatedHtml + completionContent;
+    const result = this.robustExtractHtml(combined);
+    const success = result.complete && result.html.length > truncatedHtml.length;
+
+    return { success, completedHtml: success ? result.html : truncatedHtml };
+  }
+
   private isHtmlComplete(html: string): boolean {
     if (!html || html.length < 50) return false;
     const lower = html.toLowerCase();
@@ -1413,49 +2315,72 @@ ${existingHtml.slice(0, 5000)}${existingHtml.length > 5000 ? '\n... (代码过�
   }
 
   private extractHtml(content: string): string {
-    if (!content) return '';
+    return this.robustExtractHtml(content).html;
+  }
+
+  private robustExtractHtml(content: string): { html: string; complete: boolean; reason: string } {
+    if (!content) return { html: '', complete: false, reason: 'empty_input' };
 
     const trimmed = content.trim();
 
-    // 直接就是干净的 HTML（以 doctype 或 html 标签开头）
+    const candidates: string[] = [];
+
+    const addCandidate = (html: string): void => {
+      const clean = html?.trim();
+      if (clean && /<html[\s>]/i.test(clean)) {
+        candidates.push(clean);
+      }
+    };
+
     if (/^<!DOCTYPE html/i.test(trimmed) || /^<html/i.test(trimmed)) {
-      return trimmed;
+      addCandidate(trimmed);
     }
 
-    // 优先匹配 ```html ... ``` 围栏块（最常见格式）
-    const htmlBlockMatch = trimmed.match(/```[ 	]*html[ 	]*\n([\s\S]*?)\n?```/i);
-    if (htmlBlockMatch && htmlBlockMatch[1].trim()) {
-      const block = htmlBlockMatch[1].trim();
-      if (/<!DOCTYPE html/i.test(block) || /<html/i.test(block)) {
-        return block;
-      }
+    const fenceRegex = /```[ \t]*[\w]*[ \t]*\n([\s\S]*?)\n?```/gi;
+    let fenceMatch: RegExpExecArray | null;
+    while ((fenceMatch = fenceRegex.exec(trimmed)) !== null) {
+      addCandidate(fenceMatch[1]);
     }
 
-    // 匹配任意 ``` 代码块 + HTML 内容
-    const genericBlockMatch = trimmed.match(/```[\w\s]*\n([\s\S]*?)\n?```/i);
-    if (genericBlockMatch && genericBlockMatch[1].trim()) {
-      const block = genericBlockMatch[1].trim();
-      if (/<!DOCTYPE html/i.test(block) || /<html/i.test(block)) {
-        return block;
-      }
+    const unclosedFenceMatch = trimmed.match(/```[ \t]*[\w]*[ \t]*\n([\s\S]*)$/i);
+    if (unclosedFenceMatch) {
+      addCandidate(unclosedFenceMatch[1]);
     }
 
-    // 兜底：从 <!DOCTYPE html 或 <html 截取到 </html>
-    const doctypeIdx = trimmed.search(/<!DOCTYPE\s+html/i);
-    const htmlStartIdx = trimmed.search(/<html[\s>]/i);
-    const startIdx = doctypeIdx !== -1 ? doctypeIdx : htmlStartIdx;
-    const htmlEndIdx = trimmed.lastIndexOf('</html>');
-
-    if (startIdx !== -1 && htmlEndIdx !== -1 && htmlEndIdx > startIdx) {
-      return trimmed.slice(startIdx, htmlEndIdx + 7).trim();
+    const doctypeRegex = /<!DOCTYPE\s+html[\s\S]*?(?=<\/html>)/gi;
+    let dtMatch: RegExpExecArray | null;
+    while ((dtMatch = doctypeRegex.exec(trimmed)) !== null) {
+      addCandidate(dtMatch[0] + '</html>');
     }
 
-    // 只有开始标签，没有结束标签：从开始截取到末尾
-    if (startIdx !== -1) {
-      return trimmed.slice(startIdx).trim();
+    const htmlTagRegex = /<html[\s>][\s\S]*?(?=<\/html>)/gi;
+    let htmlMatch: RegExpExecArray | null;
+    while ((htmlMatch = htmlTagRegex.exec(trimmed)) !== null) {
+      addCandidate(htmlMatch[0] + '</html>');
     }
 
-    // 完全找不到 HTML 特征，返回原文（极端情况兜底）
-    return trimmed;
+    const lastHtmlStart = trimmed.search(/<html[\s>]/i);
+    if (lastHtmlStart !== -1 && candidates.length === 0) {
+      candidates.push(trimmed.slice(lastHtmlStart).trim());
+    }
+
+    if (candidates.length === 0) {
+      return { html: trimmed, complete: false, reason: 'no_html_found' };
+    }
+
+    const completeCandidates = candidates.filter(
+      (c: string) => /<\/html>\s*$/i.test(c),
+    );
+
+    if (completeCandidates.length > 0) {
+      const best = completeCandidates[completeCandidates.length - 1];
+      return { html: best, complete: true, reason: 'ok' };
+    }
+
+    const longest = candidates.reduce(
+      (a: string, b: string) => (a.length >= b.length ? a : b),
+      '',
+    );
+    return { html: '', complete: false, reason: 'truncated_no_close_tag' };
   }
 }

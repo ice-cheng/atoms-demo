@@ -170,9 +170,9 @@ const SettingsPage: React.FC = () => {
   };
 
   return (
-    <div className="p-8 bg-slate-50 min-h-full">
-      <div className="max-w-2xl mx-auto space-y-6">
-        <h1 className="text-3xl font-bold text-foreground mb-8">设置</h1>
+     <div className="p-4 sm:p-8 bg-slate-50 min-h-full">
+       <div className="max-w-2xl mx-auto space-y-4 sm:space-y-6">
+         <h1 className="text-2xl sm:text-3xl font-bold text-foreground mb-4 sm:mb-8">设置</h1>
 
         {/* User info */}
         <Card>
@@ -285,7 +285,7 @@ const SettingsPage: React.FC = () => {
               />
             </div>
 
-            <div className="grid grid-cols-2 gap-4">
+             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label>主色</Label>
                 <div className="flex items-center gap-2">
@@ -447,9 +447,9 @@ const SettingsPage: React.FC = () => {
               以下操作不可逆，请谨慎操作
             </CardDescription>
           </CardHeader>
-          <CardContent>
-            <div className="flex items-start justify-between gap-4">
-              <div>
+           <CardContent>
+             <div className="flex flex-col sm:flex-row items-start justify-between gap-4">
+               <div>
                 <h4 className="text-sm font-medium text-red-800 mb-1">
                   删除账户
                 </h4>
@@ -457,12 +457,13 @@ const SettingsPage: React.FC = () => {
                   删除账户后，你的所有项目和数据将被永久删除，且无法恢复。
                 </p>
               </div>
-              <Button
-                variant="destructive"
-                onClick={() => setDeleteDialogOpen(true)}
-              >
-                删除我的账户
-              </Button>
+               <Button
+                 variant="destructive"
+                 onClick={() => setDeleteDialogOpen(true)}
+                 className="w-full sm:w-auto"
+               >
+                 删除我的账户
+               </Button>
             </div>
           </CardContent>
         </Card>

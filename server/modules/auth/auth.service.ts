@@ -2,13 +2,13 @@ import { ConflictException, Inject, Injectable, UnauthorizedException } from '@n
 import { DRIZZLE_DATABASE, type PostgresJsDatabase } from "@lark-apaas/fullstack-nestjs-core";
 import { eq } from 'drizzle-orm';
 import * as crypto from 'crypto';
-import { atomsUsers } from '../../database/schema';
+import { atomsUsers, authTokens } from '../../database/schema';
 import type { User, BrandKit, FontStyle } from '@shared/api.interface';
+
+const TOKEN_TTL_DAYS = 30;
 
 @Injectable()
 export class AuthService {
-  private tokenStore = new Map<string, string>(); // token -> userId
-
   constructor(@Inject(DRIZZLE_DATABASE) private readonly db: PostgresJsDatabase) {}
 
   hashPassword(password: string): string {
@@ -24,9 +24,10 @@ export class AuthService {
     return crypto.timingSafeEqual(Buffer.from(hash, 'hex'), derivedKey);
   }
 
-  private generateToken(userId: string): string {
+  private async generateToken(userId: string): Promise<string> {
     const token = crypto.randomBytes(32).toString('hex');
-    this.tokenStore.set(token, userId);
+    const expiresAt = new Date(Date.now() + TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000);
+    await this.db.insert(authTokens).values({ token, userId, expiresAt });
     return token;
   }
 
@@ -77,7 +78,7 @@ export class AuthService {
       .values({ email: normalizedEmail, username: username.trim(), passwordHash })
       .returning();
 
-    const token = this.generateToken(newUser.id);
+    const token = await this.generateToken(newUser.id);
     return { user: this.toUserResponse(newUser), token };
   }
 
@@ -87,12 +88,18 @@ export class AuthService {
       throw new UnauthorizedException('邮箱或密码错误');
     }
 
-    const token = this.generateToken(user.id);
+    const token = await this.generateToken(user.id);
     return { user: this.toUserResponse(user), token };
   }
 
-  validateToken(token: string): string | null {
-    return this.tokenStore.get(token) ?? null;
+  async validateToken(token: string): Promise<string | null> {
+    const rows = await this.db
+      .select({ userId: authTokens.userId })
+      .from(authTokens)
+      .where(eq(authTokens.token, token));
+    const row = rows[0];
+    if (!row) return null;
+    return row.userId;
   }
 
   extractTokenFromHeader(authorizationHeader: string | undefined): string | null {
@@ -108,7 +115,7 @@ export class AuthService {
       throw new UnauthorizedException('未提供认证令牌');
     }
 
-    const userId = this.validateToken(token);
+    const userId = await this.validateToken(token);
     if (!userId) {
       throw new UnauthorizedException('认证令牌无效或已过期');
     }
@@ -127,7 +134,7 @@ export class AuthService {
       throw new UnauthorizedException('未提供认证令牌');
     }
 
-    const userId = this.validateToken(token);
+    const userId = await this.validateToken(token);
     if (!userId) {
       throw new UnauthorizedException('认证令牌无效或已过期');
     }
@@ -141,11 +148,7 @@ export class AuthService {
     return this.verifyPassword(password, user.passwordHash);
   }
 
-  invalidateUserTokens(userId: string): void {
-    for (const [token, uid] of this.tokenStore) {
-      if (uid === userId) {
-        this.tokenStore.delete(token);
-      }
-    }
+  async invalidateUserTokens(userId: string): Promise<void> {
+    await this.db.delete(authTokens).where(eq(authTokens.userId, userId));
   }
 }

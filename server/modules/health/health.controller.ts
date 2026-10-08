@@ -1,7 +1,7 @@
 import { Controller, Get } from '@nestjs/common';
 
-export const APP_VERSION = '3.22.0';
-export const RELEASE_ID = 'release_20260930_v3_3';
+export const APP_VERSION = '3.39.1';
+export const RELEASE_ID = 'release_20261008_v3_39_1';
 
 @Controller('api/health')
 export class HealthController {
