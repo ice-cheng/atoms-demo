@@ -7,7 +7,7 @@ import { async } from 'rxjs';
 import { string } from 'zod';
 
 const ARK_BASE_URL = 'https://ark.cn-beijing.volces.com/api/v3';
-const ARK_API_KEY = '7c391e92-86ac-4db5-9e53-e96fedc7a1c2';
+const ARK_API_KEY = process.env.ARK_API_KEY || process.env.DOUBAO_API_KEY || '';
 const ARK_TEMPERATURE = 0.7;
 const ARK_MAX_TOKENS = 1500;
 const PM_MAX_TOKENS = 800;
